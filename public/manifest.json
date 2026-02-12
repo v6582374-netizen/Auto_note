@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "AutoNote",
+  "version": "0.1.0",
+  "description": "AI powered bookmark capture and classification workflow.",
+  "permissions": ["storage", "scripting", "activeTab", "commands", "notifications", "alarms", "identity"],
+  "host_permissions": ["https://*/*", "http://*/*"],
+  "externally_connectable": {
+    "matches": ["https://bridge.autonote.app/*"]
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "action": {
+    "default_title": "Open AutoNote Library",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "options_page": "options/index.html",
+  "commands": {
+    "save-and-classify": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Save the current page and classify with AI"
+    }
+  }
+}

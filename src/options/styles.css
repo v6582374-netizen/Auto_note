@@ -1,0 +1,139 @@
+:root {
+  --bg: #f4f7ff;
+  --panel: #ffffff;
+  --line: #d1dcf1;
+  --text: #1d2a41;
+  --muted: #597091;
+  --accent: #0b7f91;
+  --accent-soft: #d5f8ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: "Space Grotesk", "Avenir Next", "Noto Sans SC", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 0% 0%, #f8fbff, var(--bg));
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 16px 30px;
+}
+
+.panel {
+  border-radius: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 32px rgba(30, 52, 95, 0.12);
+  overflow: hidden;
+}
+
+.panel-head {
+  background: linear-gradient(120deg, #10244c 0%, #0a5578 52%, #0f8b8e 100%);
+  color: #eaf9ff;
+  padding: 16px 18px;
+}
+
+.panel-head h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.panel-head p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #ccf1ff;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field.full {
+  grid-column: 1 / -1;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font: inherit;
+  padding: 10px 11px;
+  color: var(--text);
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.weights-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.footer {
+  padding: 0 16px 16px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 9px 13px;
+  font: inherit;
+  font-weight: 640;
+  cursor: pointer;
+}
+
+.btn.primary {
+  border-color: #3aa8be;
+  background: var(--accent-soft);
+  color: #0d4f65;
+}
+
+.hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .form {
+    grid-template-columns: 1fr;
+  }
+
+  .weights-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
