@@ -120,6 +120,66 @@ function App() {
               }
               placeholder="sk-..."
             />
+            <small>Security: API Key is local-only and will never be synced to cloud.</small>
+          </div>
+
+          <div class="field">
+            <label>Cloud sync</label>
+            <select
+              value={settings.cloudSyncEnabled ? "on" : "off"}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  cloudSyncEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                })
+              }
+            >
+              <option value="on">Enabled</option>
+              <option value="off">Disabled</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Auth bridge URL</label>
+            <input
+              value={settings.authBridgeUrl}
+              onInput={(event) =>
+                setSettings({
+                  ...settings,
+                  authBridgeUrl: (event.currentTarget as HTMLInputElement).value
+                })
+              }
+              placeholder="https://bridge.autonote.app"
+            />
+          </div>
+
+          <div class="field full">
+            <label>Supabase URL</label>
+            <input
+              value={settings.supabaseUrl}
+              onInput={(event) =>
+                setSettings({
+                  ...settings,
+                  supabaseUrl: (event.currentTarget as HTMLInputElement).value
+                })
+              }
+              placeholder="https://xxxx.supabase.co"
+            />
+          </div>
+
+          <div class="field full">
+            <label>Supabase anon key</label>
+            <input
+              type="password"
+              value={settings.supabaseAnonKey}
+              onInput={(event) =>
+                setSettings({
+                  ...settings,
+                  supabaseAnonKey: (event.currentTarget as HTMLInputElement).value
+                })
+              }
+              placeholder="eyJhbGci..."
+            />
           </div>
 
           <div class="field">

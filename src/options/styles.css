@@ -78,6 +78,11 @@ body {
   color: var(--muted);
 }
 
+.field small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .field input,
 .field select,
 .field textarea {

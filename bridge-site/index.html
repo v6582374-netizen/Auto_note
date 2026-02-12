@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoNote Auth Bridge</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+        background: radial-gradient(circle at 0% 0%, #e6f0ff, #f5fbff);
+        color: #132548;
+      }
+      .card {
+        width: min(760px, calc(100vw - 24px));
+        border: 1px solid #c7d7f2;
+        border-radius: 16px;
+        background: #fff;
+        padding: 20px;
+        box-shadow: 0 20px 46px rgba(14, 34, 76, 0.12);
+      }
+      h1 { margin: 0 0 8px; }
+      p { color: #506289; }
+      ul { line-height: 1.8; }
+      a { color: #1950c5; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>AutoNote Auth Bridge</h1>
+      <p>这个站点用于将登录回调安全传递给 AutoNote Chrome 扩展。</p>
+      <ul>
+        <li><a href="/auth/callback">Auth Callback</a></li>
+        <li><a href="/privacy.html">Privacy Policy</a></li>
+        <li><a href="/terms.html">Terms of Service</a></li>
+        <li><a href="/account-deletion.html">Account Deletion</a></li>
+      </ul>
+    </main>
+  </body>
+</html>

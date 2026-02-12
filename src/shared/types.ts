@@ -1,7 +1,7 @@
 export type BookmarkStatus = "inbox" | "analyzing" | "classified" | "error" | "trashed";
 
 export type CaptureMode = "readability" | "dom_text" | "selection_only";
-export type AuthProvider = "google" | "apple" | "email_magic_link";
+export type AuthProvider = "google" | "email_magic_link";
 export type BookmarkSyncState = "dirty" | "synced" | "conflict";
 
 export interface AuthSessionUser {

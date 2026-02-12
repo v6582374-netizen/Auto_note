@@ -1,7 +1,7 @@
 import { render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { sendRuntimeMessage } from "../shared/runtime";
-import type { BookmarkItem, BookmarkStatus, CategoryRule, SemanticSearchItem } from "../shared/types";
+import type { AuthState, BookmarkItem, BookmarkStatus, CategoryRule, SemanticSearchItem } from "../shared/types";
 import "./styles.css";
 
 type ScopeType = "inbox" | "library" | "trash";
@@ -69,6 +69,14 @@ function App() {
   const [ruleCanonical, setRuleCanonical] = useState("");
   const [ruleAliases, setRuleAliases] = useState("");
   const [rulePinned, setRulePinned] = useState(false);
+  const [authState, setAuthState] = useState<AuthState>({
+    mode: "guest",
+    syncStatus: "idle"
+  });
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [migrationPromptOpen, setMigrationPromptOpen] = useState(false);
 
   const importInput = useRef<HTMLInputElement | null>(null);
   const debouncedQuery = useDebouncedValue(query.trim(), 260);
@@ -136,6 +144,7 @@ function App() {
 
   useEffect(() => {
     void reloadMeta();
+    void refreshAuthState();
   }, []);
 
   useEffect(() => {
@@ -150,6 +159,10 @@ function App() {
       setSelectedBookmarkId(null);
     }
   }, [items, selectedBookmarkId]);
+
+  useEffect(() => {
+    setMigrationPromptOpen(authState.mode === "authenticated" && Boolean(authState.needsMigration));
+  }, [authState.mode, authState.needsMigration]);
 
   async function reloadMeta() {
     setError("");
@@ -188,6 +201,99 @@ function App() {
       setCategoryRules(rulesResponse?.items ?? []);
     } catch (loadError) {
       setError(toErrorMessage(loadError));
+    }
+  }
+
+  async function refreshAuthState() {
+    try {
+      const response = await sendRuntimeMessage<AuthState>("auth/getState");
+      setAuthState(response);
+    } catch (authError) {
+      setError(toErrorMessage(authError));
+    }
+  }
+
+  async function handleSignInOAuth() {
+    setAuthBusy(true);
+    setError("");
+    try {
+      await sendRuntimeMessage<{ state: AuthState }>("auth/signInOAuth", { provider: "google" });
+      await refreshAuthState();
+      setAuthModalOpen(false);
+      setStatusHint("Google 登录成功");
+    } catch (loginError) {
+      setError(toErrorMessage(loginError));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSendMagicLink() {
+    setAuthBusy(true);
+    setError("");
+    try {
+      const result = await sendRuntimeMessage<{ sent: boolean; hint: string }>("auth/sendMagicLink", {
+        email: authEmail
+      });
+      setStatusHint(result.hint);
+    } catch (loginError) {
+      setError(toErrorMessage(loginError));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthBusy(true);
+    setError("");
+    try {
+      await sendRuntimeMessage("auth/signOut");
+      await refreshAuthState();
+      setStatusHint("已退出登录，当前仍可继续本地使用。");
+    } catch (signOutError) {
+      setError(toErrorMessage(signOutError));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSyncNow() {
+    setAuthBusy(true);
+    setError("");
+    try {
+      const result = await sendRuntimeMessage<{ source: string; pushedBookmarks: number; pulledBookmarks: number; skipped: boolean }>(
+        "auth/syncNow"
+      );
+      await refreshAuthState();
+      if (result.skipped) {
+        setStatusHint("同步已跳过：请先完成登录并在设置中启用 cloud sync。");
+      } else {
+        setStatusHint(`同步完成：推送 ${result.pushedBookmarks} 条，拉取 ${result.pulledBookmarks} 条`);
+      }
+      await reloadAll();
+    } catch (syncError) {
+      setError(toErrorMessage(syncError));
+      await refreshAuthState();
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleMigrateNow() {
+    setAuthBusy(true);
+    setError("");
+    try {
+      const result = await sendRuntimeMessage<{ success: boolean; stats: Record<string, number> }>("auth/migrateLocalToCloud");
+      setMigrationPromptOpen(false);
+      await refreshAuthState();
+      const marked = Number(result.stats.markedDirty ?? 0);
+      setStatusHint(`迁移完成：已标记 ${marked} 条本地记录并同步到云端`);
+      await reloadAll();
+    } catch (migrationError) {
+      setError(toErrorMessage(migrationError));
+      await refreshAuthState();
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -264,7 +370,7 @@ function App() {
   }
 
   async function reloadAll() {
-    await Promise.all([reloadMeta(), reloadItems()]);
+    await Promise.all([reloadMeta(), reloadItems(), refreshAuthState()]);
   }
 
   async function handleSave(
@@ -576,9 +682,25 @@ function App() {
             <p>AI associative retrieval, category boards, and full lifecycle CRUD.</p>
           </div>
 
-          <div class="view-switch">
-            <button class={`chip ${viewMode === "compact" ? "active" : ""}`} onClick={() => setViewMode("compact")}>Home</button>
-            <button class={`chip ${viewMode === "board" ? "active" : ""}`} onClick={() => setViewMode("board")}>Board</button>
+          <div class="top-actions">
+            <div class="auth-summary">
+              <span class={`sync-dot ${authState.syncStatus || "idle"}`} />
+              {authState.mode === "authenticated" ? (
+                <span>{authState.user?.email}</span>
+              ) : (
+                <span>Guest mode</span>
+              )}
+            </div>
+            <button class="btn" onClick={() => setAuthModalOpen(true)}>
+              {authState.mode === "authenticated" ? "Account" : "Sign In"}
+            </button>
+            <button class="btn" disabled={authBusy} onClick={() => void handleSyncNow()}>
+              Sync now
+            </button>
+            <div class="view-switch">
+              <button class={`chip ${viewMode === "compact" ? "active" : ""}`} onClick={() => setViewMode("compact")}>Home</button>
+              <button class={`chip ${viewMode === "board" ? "active" : ""}`} onClick={() => setViewMode("board")}>Board</button>
+            </div>
           </div>
         </div>
 
@@ -608,6 +730,11 @@ function App() {
           <button class="btn primary" onClick={() => void reloadAll()}>
             Refresh
           </button>
+          {authState.mode === "authenticated" && (
+            <button class="btn" disabled={authBusy} onClick={() => void handleMigrateNow()}>
+              Migrate local to cloud
+            </button>
+          )}
           <button class="btn" onClick={() => void handleBackfillEmbeddings()}>
             Backfill embeddings
           </button>
@@ -691,6 +818,29 @@ function App() {
           ))}
         </div>
       </header>
+
+      {authState.mode === "guest" && (
+        <section class="guest-banner">
+          登录后可开启跨设备同步（书签 + 设置），不登录也可继续本地使用。
+          <button class="btn primary" onClick={() => setAuthModalOpen(true)}>
+            立即登录
+          </button>
+        </section>
+      )}
+
+      {migrationPromptOpen && authState.mode === "authenticated" && (
+        <section class="migration-banner">
+          <span>检测到你首次登录此账号，建议立即执行“一键迁移并合并本地数据”。</span>
+          <div class="migration-actions">
+            <button class="btn primary" disabled={authBusy} onClick={() => void handleMigrateNow()}>
+              Start Migration
+            </button>
+            <button class="btn" onClick={() => setMigrationPromptOpen(false)}>
+              Later
+            </button>
+          </div>
+        </section>
+      )}
 
       <section class="status-line">{statusHint}</section>
 
@@ -837,6 +987,54 @@ function App() {
               onMoveToCategory={handleMoveToCategory}
             />
           </aside>
+        </div>
+      )}
+
+      {authModalOpen && (
+        <div class="auth-overlay" onClick={() => setAuthModalOpen(false)}>
+          <section class="auth-modal" onClick={(event) => event.stopPropagation()}>
+            <div class="auth-head">
+              <h3>{authState.mode === "authenticated" ? "Account" : "Sign in to AutoNote"}</h3>
+              <button class="btn" onClick={() => setAuthModalOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            {authState.mode === "authenticated" ? (
+              <div class="auth-user">
+                <p>{authState.user?.email}</p>
+                <p class="muted">Sync status: {authState.syncStatus || "idle"}</p>
+                {authState.lastSyncAt && <p class="muted">Last sync: {formatDate(authState.lastSyncAt)}</p>}
+                {authState.lastError && <p class="error-inline">{authState.lastError}</p>}
+                <div class="auth-actions">
+                  <button class="btn" disabled={authBusy} onClick={() => void handleSyncNow()}>
+                    Sync now
+                  </button>
+                  <button class="btn danger" disabled={authBusy} onClick={() => void handleSignOut()}>
+                    Sign out
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div class="auth-login-panel">
+                <button class="btn primary wide" disabled={authBusy} onClick={() => void handleSignInOAuth()}>
+                  Continue with Google
+                </button>
+                <div class="auth-divider">or</div>
+                <div class="auth-email-row">
+                  <input
+                    type="email"
+                    value={authEmail}
+                    onInput={(event) => setAuthEmail((event.currentTarget as HTMLInputElement).value)}
+                    placeholder="you@example.com"
+                  />
+                  <button class="btn" disabled={authBusy} onClick={() => void handleSendMagicLink()}>
+                    Send Magic Link
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
         </div>
       )}
 

@@ -54,6 +54,7 @@ type AuthStorageState = {
 
 type SyncMetaRow = {
   id: string;
+  activeUserId?: string;
   lastPullAt?: string;
   lastPushAt?: string;
   lastMigrationAt?: string;
@@ -222,7 +223,7 @@ class AutoNoteDB extends Dexie {
           "id,url,canonicalUrl,createdAt,updatedAt,lastSavedAt,status,deletedAt,category,*tags,domain,embeddingUpdatedAt,syncState,lastSyncedAt,cloudUpdatedAt,[status+updatedAt],[category+updatedAt],[status+deletedAt]",
         categoryRules: "id,canonical,*aliases,pinned,updatedAt",
         jobs: "id,updatedAt,running,leaseUntil,lastRunAt",
-        syncMeta: "id,updatedAt,lastPullAt,lastPushAt,lastMigrationAt,migrationDone"
+        syncMeta: "id,updatedAt,activeUserId,lastPullAt,lastPushAt,lastMigrationAt,migrationDone"
       })
       .upgrade((transaction) => {
         return transaction
@@ -474,7 +475,7 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
       return getAuthState();
 
     case "auth/signInOAuth":
-      return signInOAuth((message.payload as { provider: AuthProvider }).provider);
+      return signInOAuth((message.payload as { provider: "google" }).provider);
 
     case "auth/sendMagicLink":
       return sendMagicLink((message.payload as { email: string }).email);
@@ -567,7 +568,8 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
     session.aiDisabledReason = `AI skipped by privacy rule: ${excludedByRule}`;
     await db.bookmarks.update(bookmark.id, {
       status: "inbox",
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      syncState: "dirty"
     });
     await sendMessageToTab(activeTab.id, "autonote/stageError", {
       sessionId,
@@ -612,7 +614,8 @@ async function handleSubmitNoteMessage(payload: {
   await db.bookmarks.update(bookmarkId, {
     userNote: note,
     updatedAt: updatedPreview.updatedAt,
-    searchText: updatedPreview.searchText
+    searchText: updatedPreview.searchText,
+    syncState: "dirty"
   });
 
   queueEmbeddingRefresh(bookmarkId);
@@ -656,7 +659,8 @@ async function handleSubmitNoteMessage(payload: {
 
     await db.bookmarks.update(bookmarkId, {
       status: "inbox",
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      syncState: "dirty"
     });
     if (session) {
       await sendMessageToTab(session.tabId, "autonote/finalized", {
@@ -683,7 +687,8 @@ async function handleSubmitNoteMessage(payload: {
     }
     await db.bookmarks.update(bookmarkId, {
       status: "inbox",
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      syncState: "dirty"
     });
     return { status: "inbox" };
   }
@@ -787,7 +792,8 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
     const reason = `AI skipped by privacy rule: ${excludedByRule}`;
     await db.bookmarks.update(session.bookmarkId, {
       status: "inbox",
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      syncState: "dirty"
     });
     await sendMessageToTab(session.tabId, "autonote/stageError", {
       sessionId,
@@ -827,7 +833,8 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
         aiSummary: analyze.summary,
         status: "analyzing",
         aiMeta,
-        updatedAt: nowIso()
+        updatedAt: nowIso(),
+        syncState: "dirty"
       };
       updated.searchText = buildSearchText(updated);
 
@@ -873,6 +880,7 @@ async function upsertBookmarkFromCapture(capture: CapturePayload): Promise<Bookm
       pinned: Boolean(existing.pinned),
       locked: Boolean(existing.locked),
       status: "analyzing",
+      syncState: "dirty",
       deletedAt: undefined,
       contentCapture: {
         textDigest: capture.textDigest,
@@ -907,6 +915,7 @@ async function upsertBookmarkFromCapture(capture: CapturePayload): Promise<Bookm
     pinned: false,
     locked: false,
     status: "analyzing",
+    syncState: "dirty",
     tags: [],
     contentCapture: {
       textDigest: capture.textDigest,
@@ -965,6 +974,7 @@ async function finalizeBookmarkClassification(input: {
     status: "classified",
     deletedAt: undefined,
     updatedAt: nowIso(),
+    syncState: "dirty",
     classificationConfidence: clamp01(Number(input.confidence ?? 0.5)),
     aiMeta
   };
@@ -985,6 +995,7 @@ async function markBookmarkError(bookmarkId: string, reason: string, settings?: 
     ...item,
     status: "error",
     updatedAt: nowIso(),
+    syncState: "dirty",
     aiMeta: {
       provider: "openai_compatible",
       baseUrl: fallbackSettings.baseUrl,
@@ -1210,7 +1221,8 @@ async function updateBookmark(payload: UpdateBookmarkPayload): Promise<void> {
     pinned: payload.pinned ?? Boolean(item.pinned),
     locked: payload.locked ?? Boolean(item.locked),
     deletedAt: undefined,
-    updatedAt: nowIso()
+    updatedAt: nowIso(),
+    syncState: "dirty"
   };
   updated.deletedAt = updated.status === "trashed" ? item.deletedAt || nowIso() : undefined;
 
@@ -1231,7 +1243,8 @@ async function moveBookmarkToTrash(id: string): Promise<void> {
   await db.bookmarks.update(id, {
     status: "trashed",
     deletedAt: nowIso(),
-    updatedAt: nowIso()
+    updatedAt: nowIso(),
+    syncState: "dirty"
   });
 }
 
@@ -1245,7 +1258,8 @@ async function restoreBookmark(id: string): Promise<void> {
   await db.bookmarks.update(id, {
     status: restoredStatus,
     deletedAt: undefined,
-    updatedAt: nowIso()
+    updatedAt: nowIso(),
+    syncState: "dirty"
   });
 }
 
@@ -1257,6 +1271,7 @@ async function deleteBookmarkPermanently(id: string): Promise<void> {
   if (item.locked) {
     throw new Error("Bookmark is locked and cannot be deleted.");
   }
+  await deleteCloudRowsForBookmarks([item]);
   await db.bookmarks.delete(id);
 }
 
@@ -1277,6 +1292,7 @@ async function emptyTrash(payload: { olderThanDays?: number } | undefined): Prom
     return ageDays >= olderThanDays;
   });
 
+  await deleteCloudRowsForBookmarks(toDelete);
   await db.bookmarks.bulkDelete(toDelete.map((item) => item.id));
   return { deletedCount: toDelete.length };
 }
@@ -1299,6 +1315,7 @@ async function retryAiClassification(id: string): Promise<void> {
       ...item,
       status: "inbox",
       updatedAt: nowIso(),
+      syncState: "dirty",
       aiMeta: {
         provider: "openai_compatible",
         baseUrl: settings.baseUrl,
@@ -1318,6 +1335,7 @@ async function retryAiClassification(id: string): Promise<void> {
     ...item,
     status: "analyzing",
     updatedAt: nowIso(),
+    syncState: "dirty",
     deletedAt: undefined
   };
   updatedStatus.searchText = buildSearchText(updatedStatus);
@@ -1431,7 +1449,8 @@ async function deleteCategoryRule(payload: { id: string; reassignTo?: string }):
       const updated: BookmarkItem = {
         ...bookmark,
         category,
-        updatedAt: nowIso()
+        updatedAt: nowIso(),
+        syncState: "dirty"
       };
       updated.searchText = buildSearchText(updated);
       await db.bookmarks.put(updated);
@@ -1474,6 +1493,7 @@ async function importBookmarks(payload: { items: BookmarkItem[]; categoryRules?:
         saveCount: Math.max(1, Number(rawItem.saveCount || 1)),
         pinned: Boolean(rawItem.pinned),
         locked: Boolean(rawItem.locked),
+        syncState: "dirty",
         category: normalizedCategory,
         tags: normalizedTags,
         searchText: ""
@@ -1495,6 +1515,7 @@ async function importBookmarks(payload: { items: BookmarkItem[]; categoryRules?:
       saveCount: Math.max(existing.saveCount ?? 1, rawItem.saveCount ?? 1),
       pinned: Boolean(rawItem.pinned ?? existing.pinned),
       locked: Boolean(rawItem.locked ?? existing.locked),
+      syncState: "dirty",
       updatedAt: nowIso(),
       lastSavedAt: rawItem.lastSavedAt || existing.lastSavedAt || nowIso(),
       deletedAt: rawItem.status === "trashed" ? rawItem.deletedAt || nowIso() : undefined
@@ -2074,6 +2095,7 @@ async function seedDemoData(payload?: { count?: number; overwrite?: boolean }): 
         textChars: 1800 + index * 17,
         captureMode: "readability"
       },
+      syncState: "dirty",
       searchText: ""
     };
 
@@ -2093,6 +2115,7 @@ async function seedDemoData(payload?: { count?: number; overwrite?: boolean }): 
         createdAt: existing.createdAt || baseItem.createdAt,
         updatedAt: nowIso(),
         lastSavedAt: nowIso(),
+        syncState: "dirty",
         saveCount: Math.max(existing.saveCount ?? 1, baseItem.saveCount)
       };
       merged.searchText = buildSearchText(merged);
@@ -2127,7 +2150,8 @@ async function backfillFavicons(payload?: { limit?: number }): Promise<{ scanned
     }
     await db.bookmarks.update(item.id, {
       favIconUrl: nextIcon,
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      syncState: "dirty"
     });
     updated += 1;
   }
@@ -2760,6 +2784,1191 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
+async function getAuthStorageState(): Promise<AuthStorageState> {
+  if (authStorageCache) {
+    return authStorageCache;
+  }
+  const raw = await chrome.storage.local.get(STORAGE_AUTH_STATE_KEY);
+  const value = sanitizeAuthStorageState(raw[STORAGE_AUTH_STATE_KEY]);
+  authStorageCache = value;
+  return value;
+}
+
+async function saveAuthStorageState(next: AuthStorageState): Promise<AuthStorageState> {
+  const normalized = sanitizeAuthStorageState(next);
+  authStorageCache = normalized;
+  await chrome.storage.local.set({ [STORAGE_AUTH_STATE_KEY]: normalized });
+  return normalized;
+}
+
+function sanitizeAuthStorageState(raw: unknown): AuthStorageState {
+  const value = (raw ?? {}) as Partial<AuthStorageState>;
+  const session = value.session;
+  const provider = session?.provider;
+  const safeProvider: AuthProvider | undefined = provider === "google" || provider === "email_magic_link" ? provider : undefined;
+
+  const safe: AuthStorageState = {
+    syncStatus: value.syncStatus === "syncing" || value.syncStatus === "error" ? value.syncStatus : "idle",
+    lastSyncAt: typeof value.lastSyncAt === "string" ? value.lastSyncAt : undefined,
+    lastError: typeof value.lastError === "string" ? value.lastError.slice(0, 500) : undefined,
+    pendingState: typeof value.pendingState === "string" ? value.pendingState : undefined,
+    pendingNonce: typeof value.pendingNonce === "string" ? value.pendingNonce : undefined,
+    pendingStateExpiresAt: typeof value.pendingStateExpiresAt === "string" ? value.pendingStateExpiresAt : undefined
+  };
+
+  if (session && safeProvider && session.accessToken && session.user?.id && session.user?.email) {
+    safe.session = {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresAt: session.expiresAt,
+      provider: safeProvider,
+      user: {
+        id: session.user.id,
+        email: session.user.email,
+        displayName: session.user.displayName,
+        avatarUrl: session.user.avatarUrl,
+        provider: safeProvider
+      }
+    };
+  }
+
+  return safe;
+}
+
+async function ensureSyncMetaRow(): Promise<SyncMetaRow> {
+  const existing = await db.syncMeta.get("main");
+  if (existing) {
+    return existing;
+  }
+  const created: SyncMetaRow = {
+    id: "main",
+    migrationDone: false,
+    updatedAt: nowIso()
+  };
+  await db.syncMeta.put(created);
+  return created;
+}
+
+async function updateSyncMeta(patch: Partial<SyncMetaRow>): Promise<SyncMetaRow> {
+  const existing = await ensureSyncMetaRow();
+  const next: SyncMetaRow = {
+    ...existing,
+    ...patch,
+    id: "main",
+    updatedAt: nowIso()
+  };
+  await db.syncMeta.put(next);
+  return next;
+}
+
+async function getAuthState(): Promise<AuthState> {
+  const auth = await getAuthStorageState();
+  let session = auth.session;
+  const settings = await getSettingsFromStorage();
+
+  if (session && settings.cloudSyncEnabled) {
+    try {
+      session = await refreshAuthSessionIfNeeded(settings, session);
+      if (session !== auth.session) {
+        await saveAuthStorageState({
+          ...auth,
+          session
+        });
+      }
+    } catch (error) {
+      await saveAuthStorageState({
+        ...auth,
+        syncStatus: "error",
+        lastError: toErrorMessage(error)
+      });
+    }
+  }
+
+  const meta = await ensureSyncMetaRow();
+  if (!session) {
+    return {
+      mode: "guest",
+      syncStatus: auth.syncStatus ?? "idle",
+      lastSyncAt: auth.lastSyncAt,
+      lastError: auth.lastError
+    };
+  }
+
+  const needsMigration = meta.activeUserId !== session.user.id || !meta.migrationDone;
+  return {
+    mode: "authenticated",
+    user: {
+      ...session.user,
+      provider: session.provider
+    },
+    syncStatus: auth.syncStatus ?? "idle",
+    lastSyncAt: auth.lastSyncAt,
+    lastError: auth.lastError,
+    needsMigration
+  };
+}
+
+async function getAuthDebugState(): Promise<Record<string, unknown>> {
+  const auth = await getAuthStorageState();
+  const meta = await ensureSyncMetaRow();
+  return {
+    hasSession: Boolean(auth.session),
+    userId: auth.session?.user.id,
+    email: auth.session?.user.email,
+    provider: auth.session?.provider,
+    expiresAt: auth.session?.expiresAt,
+    accessToken: maskToken(auth.session?.accessToken),
+    refreshToken: maskToken(auth.session?.refreshToken),
+    syncStatus: auth.syncStatus,
+    lastSyncAt: auth.lastSyncAt,
+    lastError: auth.lastError,
+    pendingState: auth.pendingState,
+    pendingStateExpiresAt: auth.pendingStateExpiresAt,
+    syncMeta: meta
+  };
+}
+
+async function signInOAuth(provider: "google"): Promise<{ state: AuthState }> {
+  if (provider !== "google") {
+    throw new Error("OAuth provider must be google.");
+  }
+
+  const settings = await getSettingsFromStorage();
+  assertSupabaseConfigured(settings);
+
+  const pendingState = crypto.randomUUID();
+  const pendingNonce = crypto.randomUUID();
+  await persistPendingBridgeState(pendingState, pendingNonce);
+
+  try {
+    const redirectUri = chrome.identity.getRedirectURL("auth-callback");
+    const authUrl = new URL(resolveSupabaseEndpoint(settings.supabaseUrl, "/auth/v1/authorize"));
+    authUrl.searchParams.set("provider", provider);
+    authUrl.searchParams.set("redirect_to", redirectUri);
+    authUrl.searchParams.set("state", pendingState);
+    authUrl.searchParams.set("nonce", pendingNonce);
+    authUrl.searchParams.set("scopes", "openid email profile");
+
+    const redirectedTo = await launchOAuthFlow(authUrl.toString());
+    const result = parseOAuthResult(redirectedTo);
+    if (result.errorDescription) {
+      throw new Error(result.errorDescription);
+    }
+    validatePendingState(result.state, pendingState, result.nonce, pendingNonce);
+
+    if (!result.accessToken) {
+      throw new Error("OAuth succeeded but no access token was returned.");
+    }
+
+    const session = await buildSessionFromTokenResult(
+      settings,
+      {
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
+        expiresIn: result.expiresIn
+      },
+      provider
+    );
+
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      session,
+      syncStatus: "idle",
+      lastError: undefined,
+      pendingState: undefined,
+      pendingNonce: undefined,
+      pendingStateExpiresAt: undefined
+    });
+
+    await updateSyncMeta({
+      activeUserId: session.user.id,
+      migrationDone: false
+    });
+
+    void syncNow("auth");
+
+    return {
+      state: await getAuthState()
+    };
+  } catch (error) {
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      syncStatus: "error",
+      lastError: toErrorMessage(error),
+      pendingState: undefined,
+      pendingNonce: undefined,
+      pendingStateExpiresAt: undefined
+    });
+    throw error;
+  }
+}
+
+async function sendMagicLink(email: string): Promise<{ sent: boolean; hint: string }> {
+  const normalizedEmail = (email ?? "").trim().toLowerCase();
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Please enter a valid email.");
+  }
+
+  const settings = await getSettingsFromStorage();
+  assertSupabaseConfigured(settings);
+
+  const pendingState = crypto.randomUUID();
+  const pendingNonce = crypto.randomUUID();
+  await persistPendingBridgeState(pendingState, pendingNonce);
+
+  const callbackUrl = new URL(`${settings.authBridgeUrl.replace(/\/+$/, "")}/auth/callback`);
+  callbackUrl.searchParams.set("ext", chrome.runtime.id);
+  callbackUrl.searchParams.set("state", pendingState);
+  callbackUrl.searchParams.set("nonce", pendingNonce);
+  callbackUrl.searchParams.set("supabase_url", settings.supabaseUrl);
+  callbackUrl.searchParams.set("supabase_anon_key", settings.supabaseAnonKey);
+
+  const response = await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, "/auth/v1/otp"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: settings.supabaseAnonKey
+    },
+    body: JSON.stringify({
+      email: normalizedEmail,
+      create_user: true,
+      email_redirect_to: callbackUrl.toString()
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      pendingState: undefined,
+      pendingNonce: undefined,
+      pendingStateExpiresAt: undefined
+    });
+    throw new Error(`Magic Link request failed (${response.status}): ${body.slice(0, 240)}`);
+  }
+
+  return {
+    sent: true,
+    hint: "Magic Link 已发送，请在邮箱中点击后回到扩展完成登录。"
+  };
+}
+
+async function signOut(): Promise<void> {
+  const auth = await getAuthStorageState();
+  const settings = await getSettingsFromStorage();
+  const accessToken = auth.session?.accessToken;
+  if (settings.supabaseUrl && settings.supabaseAnonKey && accessToken) {
+    try {
+      await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, "/auth/v1/logout"), {
+        method: "POST",
+        headers: {
+          apikey: settings.supabaseAnonKey,
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+    } catch {
+      // Keep local sign-out reliable even when network fails.
+    }
+  }
+
+  await saveAuthStorageState({
+    syncStatus: "idle",
+    lastSyncAt: auth.lastSyncAt
+  });
+}
+
+async function handleBridgeCompleteMessage(
+  payload: {
+    state?: string;
+    nonce?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: string;
+    expiresIn?: number;
+    provider?: AuthProvider;
+  },
+  sender: chrome.runtime.MessageSender
+): Promise<{ state: AuthState }> {
+  const settings = await getSettingsFromStorage();
+  assertSupabaseConfigured(settings);
+  ensureBridgeSenderAllowed(settings, sender);
+
+  const auth = await getAuthStorageState();
+  const expectedState = auth.pendingState;
+  const expectedNonce = auth.pendingNonce;
+  const expiry = auth.pendingStateExpiresAt ? Date.parse(auth.pendingStateExpiresAt) : 0;
+  if (!expectedState || !expectedNonce || !expiry || Number.isNaN(expiry) || expiry < Date.now()) {
+    throw new Error("Bridge callback has expired. Please request login again.");
+  }
+
+  validatePendingState(payload.state, expectedState, payload.nonce, expectedNonce, true);
+
+  if (!payload.accessToken) {
+    throw new Error("Bridge callback did not include access token.");
+  }
+
+  const provider = payload.provider === "google" ? payload.provider : "email_magic_link";
+  const session = await buildSessionFromTokenResult(
+    settings,
+    {
+      accessToken: payload.accessToken,
+      refreshToken: payload.refreshToken,
+      expiresAt: payload.expiresAt,
+      expiresIn: payload.expiresIn
+    },
+    provider
+  );
+
+  await saveAuthStorageState({
+    ...auth,
+    session,
+    syncStatus: "idle",
+    lastError: undefined,
+    pendingState: undefined,
+    pendingNonce: undefined,
+    pendingStateExpiresAt: undefined
+  });
+
+  await updateSyncMeta({
+    activeUserId: session.user.id,
+    migrationDone: false
+  });
+
+  void syncNow("bridge");
+
+  return {
+    state: await getAuthState()
+  };
+}
+
+async function migrateLocalToCloud(): Promise<{ success: boolean; stats: Record<string, number> }> {
+  const settings = await getSettingsFromStorage();
+  assertSupabaseConfigured(settings);
+  const auth = await getAuthStorageState();
+  if (!settings.cloudSyncEnabled) {
+    throw new Error("Cloud sync is disabled in settings.");
+  }
+  if (!auth.session) {
+    throw new Error("Please sign in first.");
+  }
+
+  const session = await refreshAuthSessionIfNeeded(settings, auth.session);
+  await saveAuthStorageState({
+    ...auth,
+    session
+  });
+
+  const meta = await ensureSyncMetaRow();
+  const pulled = await pullFromCloud(settings, session, meta.lastPullAt);
+
+  let markedDirty = 0;
+  await db.bookmarks.toCollection().modify((raw) => {
+    const item = raw as BookmarkItem;
+    item.syncState = "dirty";
+    markedDirty += 1;
+  });
+
+  await updateSyncMeta({
+    activeUserId: session.user.id,
+    migrationDone: false,
+    lastPullAt: pulled.lastPullAt
+  });
+
+  const syncResult = await syncNow("migration");
+  await updateSyncMeta({
+    activeUserId: session.user.id,
+    migrationDone: true,
+    lastMigrationAt: nowIso()
+  });
+
+  return {
+    success: true,
+    stats: {
+      markedDirty,
+      pushedBookmarks: syncResult.pushedBookmarks,
+      pulledBookmarks: syncResult.pulledBookmarks
+    }
+  };
+}
+
+async function syncNow(source: "manual" | "alarm" | "startup" | "install" | "auth" | "bridge" | "migration"): Promise<{
+  source: string;
+  pushedBookmarks: number;
+  pulledBookmarks: number;
+  skipped: boolean;
+}> {
+  const settings = await getSettingsFromStorage();
+  if (!settings.cloudSyncEnabled) {
+    return { source, pushedBookmarks: 0, pulledBookmarks: 0, skipped: true };
+  }
+  if (!settings.supabaseUrl.trim() || !settings.supabaseAnonKey.trim()) {
+    return { source, pushedBookmarks: 0, pulledBookmarks: 0, skipped: true };
+  }
+
+  const auth = await getAuthStorageState();
+  if (!auth.session) {
+    return { source, pushedBookmarks: 0, pulledBookmarks: 0, skipped: true };
+  }
+
+  const lock = await acquireJobLock(SYNC_JOB_ID);
+  if (!lock.acquired) {
+    return { source, pushedBookmarks: 0, pulledBookmarks: 0, skipped: true };
+  }
+
+  let pushedBookmarks = 0;
+  let pulledBookmarks = 0;
+
+  try {
+    await saveAuthStorageState({
+      ...auth,
+      syncStatus: "syncing",
+      lastError: undefined
+    });
+
+    const session = await refreshAuthSessionIfNeeded(settings, auth.session);
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      session
+    });
+
+    const meta = await ensureSyncMetaRow();
+    if (meta.activeUserId && meta.activeUserId !== session.user.id) {
+      await updateSyncMeta({
+        activeUserId: session.user.id,
+        lastPullAt: undefined,
+        lastPushAt: undefined,
+        migrationDone: false
+      });
+    } else {
+      await updateSyncMeta({
+        activeUserId: session.user.id
+      });
+    }
+
+    const pushed = await pushToCloud(settings, session);
+    pushedBookmarks = pushed.pushedBookmarks;
+
+    const latestMeta = await ensureSyncMetaRow();
+    const pulled = await pullFromCloud(settings, session, latestMeta.lastPullAt);
+    pulledBookmarks = pulled.pulledBookmarks;
+
+    await updateSyncMeta({
+      activeUserId: session.user.id,
+      lastPushAt: nowIso(),
+      lastPullAt: pulled.lastPullAt || latestMeta.lastPullAt
+    });
+
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      syncStatus: "idle",
+      lastSyncAt: nowIso(),
+      lastError: undefined
+    });
+
+    await releaseJobLock(SYNC_JOB_ID, {
+      lastError: undefined
+    });
+
+    return {
+      source,
+      pushedBookmarks,
+      pulledBookmarks,
+      skipped: false
+    };
+  } catch (error) {
+    const message = toErrorMessage(error);
+    await saveAuthStorageState({
+      ...(await getAuthStorageState()),
+      syncStatus: "error",
+      lastError: message
+    });
+    await releaseJobLock(SYNC_JOB_ID, {
+      lastError: message
+    });
+    throw error;
+  }
+}
+
+async function pushToCloud(settings: ExtensionSettings, session: AuthSession): Promise<{ pushedBookmarks: number }> {
+  const dirty = await db.bookmarks.where("syncState").equals("dirty").limit(500).toArray();
+  let pushedBookmarks = 0;
+
+  if (dirty.length > 0) {
+    const payload = dirty.map((item) => toCloudBookmarkRow(session.user.id, item));
+    const rows = await requestSupabaseRest<CloudBookmarkRow[]>(
+      settings,
+      session.accessToken,
+      `/rest/v1/bookmarks?on_conflict=user_id,dedupe_key`,
+      {
+        method: "POST",
+        headers: {
+          Prefer: "resolution=merge-duplicates,return=representation"
+        },
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const updatedAtByKey = new Map<string, { id?: string; updatedAt: string }>();
+    for (const row of rows ?? []) {
+      updatedAtByKey.set(row.dedupe_key, {
+        id: row.id,
+        updatedAt: row.updated_at
+      });
+    }
+
+    for (const item of dirty) {
+      const key = dedupeKeyForBookmark(item);
+      const cloud = updatedAtByKey.get(key);
+      await db.bookmarks.update(item.id, {
+        syncState: "synced",
+        lastSyncedAt: nowIso(),
+        cloudUpdatedAt: cloud?.updatedAt ?? nowIso(),
+        cloudId: cloud?.id ?? item.cloudId
+      });
+      pushedBookmarks += 1;
+    }
+  }
+
+  const rules = await db.categoryRules.toArray();
+  if (rules.length > 0) {
+    const rulesPayload: CloudCategoryRuleRow[] = rules.map((rule) => ({
+      user_id: session.user.id,
+      canonical: rule.canonical,
+      aliases: normalizeTags(rule.aliases ?? []),
+      pinned: Boolean(rule.pinned),
+      color: rule.color,
+      updated_at: rule.updatedAt || nowIso()
+    }));
+
+    await requestSupabaseRest(
+      settings,
+      session.accessToken,
+      "/rest/v1/category_rules?on_conflict=user_id,canonical",
+      {
+        method: "POST",
+        headers: {
+          Prefer: "resolution=merge-duplicates,return=minimal"
+        },
+        body: JSON.stringify(rulesPayload)
+      }
+    );
+  }
+
+  const localSettings = await getSettingsFromStorage();
+  const cloudSettings = buildCloudSettingsPayload(localSettings);
+  await requestSupabaseRest(
+    settings,
+    session.accessToken,
+    "/rest/v1/user_settings?on_conflict=user_id",
+    {
+      method: "POST",
+      headers: {
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify([
+        {
+          user_id: session.user.id,
+          settings: cloudSettings,
+          updated_at: nowIso()
+        }
+      ])
+    }
+  );
+
+  return {
+    pushedBookmarks
+  };
+}
+
+async function pullFromCloud(
+  settings: ExtensionSettings,
+  session: AuthSession,
+  sinceIso?: string
+): Promise<{ pulledBookmarks: number; lastPullAt?: string }> {
+  const params = new URLSearchParams();
+  params.set("user_id", `eq.${session.user.id}`);
+  params.set("select", "*");
+  params.set("order", "updated_at.asc");
+  params.set("limit", "500");
+  if (sinceIso) {
+    params.set("updated_at", `gt.${sinceIso}`);
+  }
+
+  const cloudRows = await requestSupabaseRest<CloudBookmarkRow[]>(
+    settings,
+    session.accessToken,
+    `/rest/v1/bookmarks?${params.toString()}`,
+    {
+      method: "GET"
+    }
+  );
+
+  let pulledBookmarks = 0;
+  let lastPullAt = sinceIso;
+  if (Array.isArray(cloudRows) && cloudRows.length > 0) {
+    const localAll = await db.bookmarks.toArray();
+    const localByKey = new Map<string, BookmarkItem>();
+    for (const item of localAll) {
+      localByKey.set(dedupeKeyForBookmark(item), item);
+    }
+
+    for (const row of cloudRows) {
+      const cloudItem = fromCloudBookmarkRow(row);
+      const key = row.dedupe_key || dedupeKeyForBookmark(cloudItem);
+      const local = localByKey.get(key);
+      const merged = mergeBookmarkByRecency(local, cloudItem);
+      await db.bookmarks.put(merged);
+      localByKey.set(key, merged);
+      pulledBookmarks += 1;
+      if (!lastPullAt || row.updated_at > lastPullAt) {
+        lastPullAt = row.updated_at;
+      }
+    }
+  }
+
+  const ruleParams = new URLSearchParams();
+  ruleParams.set("user_id", `eq.${session.user.id}`);
+  ruleParams.set("select", "*");
+  ruleParams.set("order", "updated_at.desc");
+  ruleParams.set("limit", "300");
+  const cloudRules = await requestSupabaseRest<CloudCategoryRuleRow[]>(
+    settings,
+    session.accessToken,
+    `/rest/v1/category_rules?${ruleParams.toString()}`,
+    { method: "GET" }
+  );
+  if (Array.isArray(cloudRules)) {
+    const existing = await listCategoryRules();
+    const existingByCanonical = new Map(existing.map((item) => [normalizeLookup(item.canonical), item]));
+    for (const row of cloudRules) {
+      const canonical = normalizeCategory(row.canonical);
+      if (!canonical) {
+        continue;
+      }
+      const current = existingByCanonical.get(normalizeLookup(canonical));
+      if (current && current.updatedAt >= row.updated_at) {
+        continue;
+      }
+      const next: CategoryRule = {
+        id: current?.id || crypto.randomUUID(),
+        canonical,
+        aliases: normalizeTags(row.aliases ?? []),
+        pinned: Boolean(row.pinned),
+        color: row.color || undefined,
+        updatedAt: row.updated_at || nowIso()
+      };
+      await db.categoryRules.put(next);
+    }
+  }
+
+  const userSettingParams = new URLSearchParams();
+  userSettingParams.set("user_id", `eq.${session.user.id}`);
+  userSettingParams.set("select", "settings,updated_at");
+  userSettingParams.set("order", "updated_at.desc");
+  userSettingParams.set("limit", "1");
+  const cloudSettingsRows = await requestSupabaseRest<Array<{ settings?: Partial<ExtensionSettings> }>>(
+    settings,
+    session.accessToken,
+    `/rest/v1/user_settings?${userSettingParams.toString()}`,
+    { method: "GET" }
+  );
+  const newest = cloudSettingsRows?.[0]?.settings;
+  if (newest && typeof newest === "object") {
+    const local = await getSettingsFromStorage();
+    const merged: ExtensionSettings = {
+      ...local,
+      ...newest,
+      apiKey: local.apiKey,
+      supabaseUrl: local.supabaseUrl,
+      supabaseAnonKey: local.supabaseAnonKey,
+      authBridgeUrl: local.authBridgeUrl
+    };
+    await saveSettingsToStorage(merged);
+  }
+
+  return {
+    pulledBookmarks,
+    lastPullAt
+  };
+}
+
+async function deleteCloudRowsForBookmarks(items: BookmarkItem[]): Promise<void> {
+  if (!items.length) {
+    return;
+  }
+
+  const settings = await getSettingsFromStorage();
+  if (!settings.cloudSyncEnabled || !settings.supabaseUrl || !settings.supabaseAnonKey) {
+    return;
+  }
+
+  const auth = await getAuthStorageState();
+  if (!auth.session) {
+    return;
+  }
+
+  let session: AuthSession;
+  try {
+    session = await refreshAuthSessionIfNeeded(settings, auth.session);
+  } catch {
+    return;
+  }
+
+  const keys = items.map((item) => dedupeKeyForBookmark(item)).filter(Boolean);
+  if (!keys.length) {
+    return;
+  }
+
+  const params = new URLSearchParams();
+  params.set("user_id", `eq.${session.user.id}`);
+  params.set("dedupe_key", `in.(${keys.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(",")})`);
+
+  try {
+    await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, `/rest/v1/bookmarks?${params.toString()}`), {
+      method: "DELETE",
+      headers: {
+        apikey: settings.supabaseAnonKey,
+        Authorization: `Bearer ${session.accessToken}`,
+        Prefer: "return=minimal"
+      }
+    });
+  } catch {
+    return;
+  }
+}
+
+function mergeBookmarkByRecency(local: BookmarkItem | undefined, cloud: BookmarkItem): BookmarkItem {
+  const cloudUpdatedAt = cloud.updatedAt || cloud.createdAt || nowIso();
+  if (!local) {
+    const created = {
+      ...cloud,
+      id: cloud.id || crypto.randomUUID(),
+      syncState: "synced" as BookmarkSyncState,
+      lastSyncedAt: nowIso(),
+      cloudUpdatedAt: cloudUpdatedAt
+    };
+    created.searchText = buildSearchText(created);
+    return created;
+  }
+
+  const localUpdatedAt = local.updatedAt || local.createdAt || nowIso();
+  const cloudIsNewer = cloudUpdatedAt >= localUpdatedAt;
+  const mergedTags = normalizeTags([...(local.tags ?? []), ...(cloud.tags ?? [])]);
+
+  if (cloudIsNewer && local.syncState !== "dirty") {
+    const merged: BookmarkItem = {
+      ...local,
+      ...cloud,
+      id: local.id,
+      tags: mergedTags,
+      saveCount: Math.max(local.saveCount ?? 1, cloud.saveCount ?? 1),
+      syncState: "synced",
+      lastSyncedAt: nowIso(),
+      cloudUpdatedAt: cloudUpdatedAt,
+      cloudId: cloud.cloudId || local.cloudId
+    };
+    merged.searchText = buildSearchText(merged);
+    return merged;
+  }
+
+  const merged: BookmarkItem = {
+    ...local,
+    tags: mergedTags,
+    syncState: local.syncState === "dirty" && cloudIsNewer ? "conflict" : normalizeSyncState(local.syncState),
+    cloudUpdatedAt: cloudUpdatedAt,
+    cloudId: cloud.cloudId || local.cloudId
+  };
+  merged.searchText = buildSearchText(merged);
+  return merged;
+}
+
+function dedupeKeyForBookmark(item: Pick<BookmarkItem, "canonicalUrl" | "url">): string {
+  return normalizeUrl(item.canonicalUrl || item.url).toLowerCase();
+}
+
+function toCloudBookmarkRow(userId: string, item: BookmarkItem): CloudBookmarkRow {
+  return {
+    id: item.cloudId,
+    user_id: userId,
+    dedupe_key: dedupeKeyForBookmark(item),
+    url: item.url,
+    canonical_url: item.canonicalUrl ?? null,
+    title: item.title,
+    domain: item.domain,
+    favicon_url: item.favIconUrl ?? null,
+    status: normalizeBookmarkStatus(item.status),
+    category: item.category ?? null,
+    tags: normalizeTags(item.tags ?? []),
+    user_note: item.userNote ?? null,
+    ai_summary: item.aiSummary ?? null,
+    created_at: item.createdAt || nowIso(),
+    updated_at: item.updatedAt || nowIso(),
+    deleted_at: item.deletedAt ?? null,
+    save_count: Math.max(1, Number(item.saveCount ?? 1))
+  };
+}
+
+function fromCloudBookmarkRow(row: CloudBookmarkRow): BookmarkItem {
+  const created: BookmarkItem = {
+    id: crypto.randomUUID(),
+    cloudId: row.id,
+    url: row.url,
+    canonicalUrl: row.canonical_url || undefined,
+    title: row.title || row.url,
+    domain: row.domain || tryParseUrl(row.url)?.hostname || "unknown.domain",
+    favIconUrl: row.favicon_url || deriveFaviconFallback(row.url, row.domain),
+    createdAt: row.created_at || nowIso(),
+    updatedAt: row.updated_at || nowIso(),
+    lastSavedAt: row.updated_at || row.created_at || nowIso(),
+    saveCount: Math.max(1, Number(row.save_count ?? 1)),
+    status: normalizeBookmarkStatus(row.status),
+    deletedAt: row.deleted_at || undefined,
+    userNote: row.user_note || undefined,
+    aiSummary: row.ai_summary || undefined,
+    category: normalizeCategory(row.category || undefined),
+    tags: normalizeTags(row.tags ?? []),
+    pinned: false,
+    locked: false,
+    syncState: "synced",
+    lastSyncedAt: nowIso(),
+    cloudUpdatedAt: row.updated_at || nowIso(),
+    searchText: ""
+  };
+  created.searchText = buildSearchText(created);
+  return created;
+}
+
+function buildCloudSettingsPayload(settings: ExtensionSettings): Partial<ExtensionSettings> {
+  return {
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    embeddingModel: settings.embeddingModel,
+    embeddingContentMode: settings.embeddingContentMode,
+    embeddingMaxChars: settings.embeddingMaxChars,
+    temperature: settings.temperature,
+    maxChars: settings.maxChars,
+    preferReuseCategories: settings.preferReuseCategories,
+    semanticSearchEnabled: settings.semanticSearchEnabled,
+    searchFallbackMode: settings.searchFallbackMode,
+    excludedUrlPatterns: settings.excludedUrlPatterns,
+    rankingWeights: settings.rankingWeights,
+    trashRetentionDays: settings.trashRetentionDays
+  };
+}
+
+async function requestSupabaseRest<T>(
+  settings: ExtensionSettings,
+  accessToken: string,
+  path: string,
+  init: RequestInit
+): Promise<T> {
+  const response = await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, path), {
+    ...init,
+    headers: {
+      apikey: settings.supabaseAnonKey,
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {})
+    }
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase REST failed (${response.status}): ${body.slice(0, 320)}`);
+  }
+  if (response.status === 204) {
+    return [] as T;
+  }
+  const text = await response.text();
+  if (!text) {
+    return [] as T;
+  }
+  return JSON.parse(text) as T;
+}
+
+function assertSupabaseConfigured(settings: ExtensionSettings): void {
+  if (!settings.supabaseUrl.trim()) {
+    throw new Error("Supabase URL is missing. Set it in Options.");
+  }
+  if (!settings.supabaseAnonKey.trim()) {
+    throw new Error("Supabase anon key is missing. Set it in Options.");
+  }
+  if (!settings.authBridgeUrl.trim()) {
+    throw new Error("Auth bridge URL is missing. Set it in Options.");
+  }
+}
+
+function resolveSupabaseEndpoint(baseUrl: string, path: string): string {
+  const cleanedBase = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  const cleanedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${cleanedBase}${cleanedPath}`;
+}
+
+async function refreshAuthSessionIfNeeded(settings: ExtensionSettings, session: AuthSession): Promise<AuthSession> {
+  if (!session.expiresAt) {
+    return session;
+  }
+
+  const expiryMs = Date.parse(session.expiresAt);
+  if (!Number.isFinite(expiryMs) || expiryMs - Date.now() > 60_000) {
+    return session;
+  }
+
+  if (!session.refreshToken) {
+    throw new Error("Session expired and refresh token is missing.");
+  }
+
+  const response = await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, "/auth/v1/token?grant_type=refresh_token"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: settings.supabaseAnonKey
+    },
+    body: JSON.stringify({
+      refresh_token: session.refreshToken
+    })
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Session refresh failed (${response.status}): ${body.slice(0, 240)}`);
+  }
+
+  const payload = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    user?: {
+      id: string;
+      email?: string;
+      user_metadata?: Record<string, unknown>;
+      app_metadata?: Record<string, unknown>;
+    };
+  };
+  if (!payload.access_token) {
+    throw new Error("Session refresh returned empty access token.");
+  }
+
+  const fallbackUser = payload.user
+    ? mapSupabaseUser(payload.user, session.provider)
+    : await fetchSupabaseUser(settings, payload.access_token, session.provider);
+  return {
+    accessToken: payload.access_token,
+    refreshToken: payload.refresh_token || session.refreshToken,
+    expiresAt: calculateExpiry(payload.access_token, undefined, payload.expires_in),
+    provider: session.provider,
+    user: fallbackUser
+  };
+}
+
+async function buildSessionFromTokenResult(
+  settings: ExtensionSettings,
+  token: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: string;
+    expiresIn?: number;
+  },
+  provider: AuthProvider
+): Promise<AuthSession> {
+  const user = await fetchSupabaseUser(settings, token.accessToken, provider);
+  return {
+    accessToken: token.accessToken,
+    refreshToken: token.refreshToken,
+    expiresAt: calculateExpiry(token.accessToken, token.expiresAt, token.expiresIn),
+    provider,
+    user
+  };
+}
+
+async function fetchSupabaseUser(settings: ExtensionSettings, accessToken: string, provider: AuthProvider): Promise<AuthSessionUser> {
+  const response = await fetch(resolveSupabaseEndpoint(settings.supabaseUrl, "/auth/v1/user"), {
+    method: "GET",
+    headers: {
+      apikey: settings.supabaseAnonKey,
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Fetch user failed (${response.status}): ${body.slice(0, 240)}`);
+  }
+  const payload = (await response.json()) as {
+    id: string;
+    email?: string;
+    user_metadata?: Record<string, unknown>;
+    app_metadata?: Record<string, unknown>;
+  };
+  return mapSupabaseUser(payload, provider);
+}
+
+function mapSupabaseUser(
+  user: {
+    id: string;
+    email?: string;
+    user_metadata?: Record<string, unknown>;
+    app_metadata?: Record<string, unknown>;
+  },
+  provider: AuthProvider
+): AuthSessionUser {
+  return {
+    id: user.id,
+    email: user.email || "unknown@autonote.local",
+    displayName:
+      stringOrUndefined(user.user_metadata?.full_name) ||
+      stringOrUndefined(user.user_metadata?.name) ||
+      stringOrUndefined(user.user_metadata?.preferred_username),
+    avatarUrl: stringOrUndefined(user.user_metadata?.avatar_url),
+    provider
+  };
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function calculateExpiry(accessToken: string, expiresAt?: string, expiresIn?: number): string | undefined {
+  if (expiresAt) {
+    const parsed = Date.parse(expiresAt);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+  }
+  if (Number.isFinite(expiresIn)) {
+    return new Date(Date.now() + Number(expiresIn) * 1000).toISOString();
+  }
+  const jwtExpiry = parseJwtExpiry(accessToken);
+  if (jwtExpiry) {
+    return jwtExpiry;
+  }
+  return undefined;
+}
+
+function parseJwtExpiry(token: string): string | undefined {
+  const segments = token.split(".");
+  if (segments.length < 2) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(decodeBase64Url(segments[1])) as { exp?: number };
+    if (typeof payload.exp === "number" && Number.isFinite(payload.exp)) {
+      return new Date(payload.exp * 1000).toISOString();
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  return atob(padded);
+}
+
+function parseOAuthResult(urlValue: string): {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string;
+  expiresIn?: number;
+  state?: string;
+  nonce?: string;
+  errorDescription?: string;
+} {
+  const parsed = new URL(urlValue);
+  const hash = new URLSearchParams(parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash);
+  const query = parsed.searchParams;
+
+  const accessToken = hash.get("access_token") || query.get("access_token") || undefined;
+  const refreshToken = hash.get("refresh_token") || query.get("refresh_token") || undefined;
+  const expiresAtRaw = hash.get("expires_at") || query.get("expires_at");
+  const expiresInRaw = hash.get("expires_in") || query.get("expires_in");
+  const state = hash.get("state") || query.get("state") || undefined;
+  const nonce = hash.get("nonce") || query.get("nonce") || undefined;
+  const errorDescription = hash.get("error_description") || query.get("error_description") || undefined;
+
+  const expiresAt = expiresAtRaw && /^\d+$/.test(expiresAtRaw) ? new Date(Number(expiresAtRaw) * 1000).toISOString() : undefined;
+  const expiresIn = expiresInRaw && /^\d+$/.test(expiresInRaw) ? Number(expiresInRaw) : undefined;
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    expiresIn,
+    state,
+    nonce,
+    errorDescription
+  };
+}
+
+function launchOAuthFlow(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    chrome.identity.launchWebAuthFlow(
+      {
+        url,
+        interactive: true
+      },
+      (redirectedTo) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          reject(new Error(lastError.message || "OAuth flow failed."));
+          return;
+        }
+        if (!redirectedTo) {
+          reject(new Error("OAuth flow returned empty redirect URL."));
+          return;
+        }
+        resolve(redirectedTo);
+      }
+    );
+  });
+}
+
+async function persistPendingBridgeState(state: string, nonce: string): Promise<void> {
+  const auth = await getAuthStorageState();
+  await saveAuthStorageState({
+    ...auth,
+    pendingState: state,
+    pendingNonce: nonce,
+    pendingStateExpiresAt: new Date(Date.now() + BRIDGE_STATE_TTL_MS).toISOString()
+  });
+}
+
+function validatePendingState(
+  actualState: string | undefined,
+  expectedState: string,
+  actualNonce: string | undefined,
+  expectedNonce: string,
+  strictNonce = false
+): void {
+  if (!actualState || actualState !== expectedState) {
+    throw new Error("OAuth state mismatch. Please retry login.");
+  }
+  if (strictNonce && !actualNonce) {
+    throw new Error("OAuth nonce is missing. Please retry login.");
+  }
+  if (actualNonce && actualNonce !== expectedNonce) {
+    throw new Error("OAuth nonce mismatch. Please retry login.");
+  }
+}
+
+function ensureBridgeSenderAllowed(settings: ExtensionSettings, sender: chrome.runtime.MessageSender): void {
+  const allowedOrigin = tryParseUrl(settings.authBridgeUrl)?.origin;
+  const senderOrigin = sender.origin || tryParseUrl(sender.url)?.origin;
+  if (!allowedOrigin || !senderOrigin || senderOrigin !== allowedOrigin) {
+    throw new Error("Blocked external auth callback from untrusted origin.");
+  }
+}
+
+function maskToken(token: string | undefined): string | undefined {
+  if (!token) {
+    return undefined;
+  }
+  if (token.length < 10) {
+    return "***";
+  }
+  return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+
 async function ensureBackgroundAlarms(): Promise<void> {
   await chrome.alarms.create(ALARM_BACKFILL, {
     delayInMinutes: 0.5,
@@ -2768,6 +3977,10 @@ async function ensureBackgroundAlarms(): Promise<void> {
   await chrome.alarms.create(ALARM_TRASH_CLEANUP, {
     delayInMinutes: 1,
     periodInMinutes: 60
+  });
+  await chrome.alarms.create(ALARM_SYNC, {
+    delayInMinutes: 2,
+    periodInMinutes: 15
   });
 }
 
@@ -2796,6 +4009,7 @@ async function runMigrationSelfCheck(): Promise<void> {
       ...item,
       status: normalizeBookmarkStatus(item.status),
       tags: normalizeTags(item.tags ?? []),
+      syncState: normalizeSyncState(item.syncState),
       saveCount: Math.max(1, Number(item.saveCount ?? 1)),
       pinned: Boolean(item.pinned),
       locked: Boolean(item.locked),
@@ -2822,6 +4036,7 @@ async function runMigrationSelfCheck(): Promise<void> {
 
     const hasDiff =
       next.status !== item.status ||
+      next.syncState !== item.syncState ||
       next.searchText !== item.searchText ||
       next.tags.join("|") !== (item.tags ?? []).join("|") ||
       next.lastSavedAt !== item.lastSavedAt ||
@@ -3174,6 +4389,13 @@ function normalizeBookmarkStatus(status: BookmarkStatus | string | undefined): B
     return status;
   }
   return "inbox";
+}
+
+function normalizeSyncState(value: BookmarkSyncState | string | undefined): BookmarkSyncState {
+  if (value === "dirty" || value === "synced" || value === "conflict") {
+    return value;
+  }
+  return "dirty";
 }
 
 function normalizeCategory(category?: string): string | undefined {

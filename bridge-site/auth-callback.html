@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoNote Login Callback</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+        background: radial-gradient(circle at 20% 0%, #dfedff, #f6fbff);
+        color: #16305e;
+      }
+      .card {
+        width: min(600px, calc(100vw - 24px));
+        border: 1px solid #c4d6f5;
+        border-radius: 16px;
+        background: #fff;
+        box-shadow: 0 16px 40px rgba(18, 36, 70, 0.12);
+        padding: 20px;
+      }
+      h1 { margin: 0 0 10px; }
+      p { margin: 6px 0; color: #4a5e84; line-height: 1.6; }
+      .ok { color: #0c7f66; }
+      .err { color: #b2304b; }
+      code {
+        display: block;
+        margin-top: 8px;
+        font-size: 12px;
+        background: #f2f7ff;
+        border: 1px solid #d6e1f5;
+        border-radius: 8px;
+        padding: 8px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>AutoNote 登录回调</h1>
+      <p id="status">正在验证登录信息并回传给扩展...</p>
+      <code id="detail"></code>
+    </main>
+
+    <script>
+      const PROTOCOL_VERSION = 1;
+      const statusNode = document.getElementById("status");
+      const detailNode = document.getElementById("detail");
+
+      function setStatus(text, ok) {
+        statusNode.textContent = text;
+        statusNode.className = ok ? "ok" : "err";
+      }
+
+      function parseParams() {
+        const query = new URLSearchParams(window.location.search);
+        const hash = new URLSearchParams(window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash);
+        const get = (name) => hash.get(name) || query.get(name) || "";
+
+        return {
+          ext: query.get("ext") || "",
+          supabaseUrl: query.get("supabase_url") || "",
+          supabaseAnonKey: query.get("supabase_anon_key") || "",
+          state: get("state"),
+          nonce: get("nonce"),
+          accessToken: get("access_token"),
+          refreshToken: get("refresh_token"),
+          expiresIn: Number(get("expires_in") || "0") || undefined,
+          expiresAt: get("expires_at") || undefined,
+          tokenHash: get("token_hash"),
+          type: get("type") || "magiclink"
+        };
+      }
+
+      async function verifyMagicLinkIfNeeded(params) {
+        if (params.accessToken || !params.tokenHash || !params.supabaseUrl || !params.supabaseAnonKey) {
+          return params;
+        }
+
+        const response = await fetch(`${params.supabaseUrl.replace(/\/+$/, "")}/auth/v1/verify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: params.supabaseAnonKey
+          },
+          body: JSON.stringify({
+            type: params.type,
+            token_hash: params.tokenHash
+          })
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Magic Link verify failed (${response.status}): ${text.slice(0, 220)}`);
+        }
+
+        const payload = await response.json();
+        return {
+          ...params,
+          accessToken: payload.access_token || params.accessToken,
+          refreshToken: payload.refresh_token || params.refreshToken,
+          expiresIn: payload.expires_in || params.expiresIn,
+          expiresAt: payload.expires_at || params.expiresAt
+        };
+      }
+
+      async function sendToExtension(params) {
+        if (!params.ext) {
+          throw new Error("Missing extension id.");
+        }
+        if (!params.accessToken) {
+          throw new Error("Missing access token.");
+        }
+        if (!window.chrome?.runtime?.sendMessage) {
+          throw new Error("Chrome runtime API is unavailable.");
+        }
+
+        const payload = {
+          protocolVersion: PROTOCOL_VERSION,
+          type: "auth/bridgeComplete",
+          payload: {
+            state: params.state,
+            nonce: params.nonce,
+            accessToken: params.accessToken,
+            refreshToken: params.refreshToken,
+            expiresAt: params.expiresAt,
+            expiresIn: params.expiresIn,
+            provider: "email_magic_link"
+          }
+        };
+
+        await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(params.ext, payload, (response) => {
+            const lastError = chrome.runtime.lastError;
+            if (lastError) {
+              reject(new Error(lastError.message || "Failed to send callback to extension."));
+              return;
+            }
+            if (!response?.ok) {
+              reject(new Error(response?.error || "Extension returned unknown auth error."));
+              return;
+            }
+            resolve(response.data);
+          });
+        });
+      }
+
+      (async () => {
+        try {
+          const rawParams = parseParams();
+          const params = await verifyMagicLinkIfNeeded(rawParams);
+          await sendToExtension(params);
+          setStatus("登录完成，已同步到 AutoNote 扩展。你可以关闭此页面。", true);
+          detailNode.textContent = "Success";
+        } catch (error) {
+          setStatus("登录回传失败，请返回扩展重试。", false);
+          detailNode.textContent = String(error?.message || error);
+        }
+      })();
+    </script>
+  </body>
+</html>
