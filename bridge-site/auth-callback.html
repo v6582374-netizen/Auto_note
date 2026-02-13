@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AutoNote Login Callback</title>
+    <title>MuseMark Login Callback</title>
     <style>
       body {
         margin: 0;
@@ -40,7 +40,7 @@
   </head>
   <body>
     <main class="card">
-      <h1>AutoNote 登录回调</h1>
+      <h1>MuseMark 登录回调</h1>
       <p id="status">正在验证登录信息并回传给扩展...</p>
       <code id="detail"></code>
     </main>
@@ -153,7 +153,7 @@
           const rawParams = parseParams();
           const params = await verifyMagicLinkIfNeeded(rawParams);
           await sendToExtension(params);
-          setStatus("登录完成，已同步到 AutoNote 扩展。你可以关闭此页面。", true);
+          setStatus("登录完成，已同步到 MuseMark 扩展。你可以关闭此页面。", true);
           detailNode.textContent = "Success";
         } catch (error) {
           setStatus("登录回传失败，请返回扩展重试。", false);

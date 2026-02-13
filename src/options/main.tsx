@@ -88,7 +88,7 @@ function App() {
     <div class="wrap">
       <section class="panel">
         <div class="panel-head">
-          <h1>AutoNote Settings</h1>
+          <h1>MuseMark Settings</h1>
           <p>Configure API, privacy/cost limits, and semantic ranking behavior.</p>
         </div>
 
@@ -150,7 +150,7 @@ function App() {
                   authBridgeUrl: (event.currentTarget as HTMLInputElement).value
                 })
               }
-              placeholder="https://bridge.autonote.app"
+              placeholder="https://bridge.musemark.app"
             />
           </div>
 
@@ -312,6 +312,73 @@ function App() {
           </div>
 
           <div class="field">
+            <label>Web augment for ambiguous query</label>
+            <select
+              value={settings.webAugmentEnabled ? "on" : "off"}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  webAugmentEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                })
+              }
+            >
+              <option value="on">Enabled</option>
+              <option value="off">Disabled</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Clarify on low confidence</label>
+            <select
+              value={settings.clarifyOnLowConfidence ? "on" : "off"}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  clarifyOnLowConfidence: (event.currentTarget as HTMLSelectElement).value === "on"
+                })
+              }
+            >
+              <option value="on">Enabled</option>
+              <option value="off">Disabled</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Low confidence threshold</label>
+            <input
+              type="number"
+              min="0.4"
+              max="0.95"
+              step="0.01"
+              value={settings.lowConfidenceThreshold}
+              onInput={(event) =>
+                setSettings({
+                  ...settings,
+                  lowConfidenceThreshold: Number((event.currentTarget as HTMLInputElement).value)
+                })
+              }
+            />
+          </div>
+
+          <div class="field">
+            <label>Max web augment calls/query</label>
+            <select
+              value={String(settings.maxWebAugmentPerQuery)}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  maxWebAugmentPerQuery: Number((event.currentTarget as HTMLSelectElement).value)
+                })
+              }
+            >
+              <option value="0">0</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+
+          <div class="field">
             <label>Trash retention days</label>
             <input
               type="number"
@@ -326,6 +393,87 @@ function App() {
                 })
               }
             />
+          </div>
+
+          <div class="field">
+            <label>QuickDock</label>
+            <select
+              value={settings.quickDockEnabled ? "on" : "off"}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  quickDockEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                })
+              }
+            >
+              <option value="on">Enabled</option>
+              <option value="off">Disabled</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>QuickDock default state</label>
+            <select
+              value={settings.quickDockCollapsedByDefault ? "collapsed" : "expanded"}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  quickDockCollapsedByDefault: (event.currentTarget as HTMLSelectElement).value === "collapsed"
+                })
+              }
+            >
+              <option value="collapsed">Collapsed</option>
+              <option value="expanded">Expanded</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>QuickDock max items</label>
+            <select
+              value={String(settings.quickDockMaxItems)}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  quickDockMaxItems: Number((event.currentTarget as HTMLSelectElement).value)
+                })
+              }
+            >
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>QuickDock pin mode</label>
+            <select
+              value={settings.quickDockPinMode}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  quickDockPinMode: (event.currentTarget as HTMLSelectElement).value as "manual_first" | "manual_only"
+                })
+              }
+            >
+              <option value="manual_first">Manual first + adaptive</option>
+              <option value="manual_only">Manual only</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Classification mode</label>
+            <select
+              value={settings.classificationMode}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  classificationMode: (event.currentTarget as HTMLSelectElement).value as "by_type" | "by_content"
+                })
+              }
+            >
+              <option value="by_type">By bookmark type</option>
+              <option value="by_content">By page content</option>
+            </select>
           </div>
 
           <div class="field">

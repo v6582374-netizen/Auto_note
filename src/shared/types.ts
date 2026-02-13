@@ -66,11 +66,79 @@ export interface SearchSignals {
   recencyScore?: number;
 }
 
+export interface SearchScoreBreakdown {
+  bookmarkId: string;
+  title: string;
+  finalScore: number;
+  exactMatchTier: number;
+  lexicalScore: number;
+  semanticScore: number;
+  taxonomyScore: number;
+  recencyScore: number;
+}
+
+export interface SearchTrace {
+  query: string;
+  effectiveQuery: string;
+  intentType: "empty" | "explicit" | "ambiguous";
+  webUsed: boolean;
+  webReason: string;
+  expandedTerms: string[];
+  decisionReason: string;
+  scoreBreakdown: SearchScoreBreakdown[];
+}
+
 export interface RankingWeights {
   semantic: number;
   lexical: number;
   taxonomy: number;
   recency: number;
+}
+
+export interface DockProfile {
+  id: string;
+  name: string;
+  itemIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DockItemPreference {
+  bookmarkId: string;
+  pinned?: boolean;
+  pinOrder?: number;
+  dismissedUntil?: string;
+  dockOpenCount?: number;
+  dockLastOpenedAt?: string;
+  dockOpenEvents?: string[];
+}
+
+export interface DockLayoutState {
+  mode: "collapsed" | "peek" | "expanded";
+  pinned: boolean;
+  activeProfileId: string;
+  updatedAt: string;
+}
+
+export interface DockRankingState {
+  score: number;
+  clickScore: number;
+  openRecencyScore: number;
+  saveRecencyScore: number;
+  affinityScore: number;
+}
+
+export interface DockEntry {
+  id: string;
+  kind: "bookmark" | "action";
+  title: string;
+  subtitle?: string;
+  url?: string;
+  domain?: string;
+  favIconUrl?: string;
+  pinned?: boolean;
+  ranking?: DockRankingState;
+  action?: "open_library" | "save_current_page";
 }
 
 export interface BookmarkItem {
@@ -135,9 +203,18 @@ export interface ExtensionSettings {
   embeddingMaxChars: number;
   temperature: number;
   maxChars: number;
+  quickDockEnabled: boolean;
+  quickDockCollapsedByDefault: boolean;
+  quickDockMaxItems: number;
+  quickDockPinMode: "manual_first" | "manual_only";
+  classificationMode: "by_type" | "by_content";
   preferReuseCategories: boolean;
   semanticSearchEnabled: boolean;
   searchFallbackMode: "local_hybrid" | "lexical_only";
+  webAugmentEnabled: boolean;
+  clarifyOnLowConfidence: boolean;
+  lowConfidenceThreshold: number;
+  maxWebAugmentPerQuery: number;
   excludedUrlPatterns: string[];
   rankingWeights: RankingWeights;
   trashRetentionDays: number;

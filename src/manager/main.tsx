@@ -1,7 +1,7 @@
 import { render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { sendRuntimeMessage } from "../shared/runtime";
-import type { AuthState, BookmarkItem, BookmarkStatus, CategoryRule, SemanticSearchItem } from "../shared/types";
+import type { AuthState, BookmarkItem, BookmarkStatus, CategoryRule, SearchTrace, SemanticSearchItem } from "../shared/types";
 import "./styles.css";
 
 type ScopeType = "inbox" | "library" | "trash";
@@ -29,16 +29,23 @@ type FaviconBackfillResult = {
   updated: number;
 };
 
-type SeedDemoResult = {
-  created: number;
-  updated: number;
-  requested: number;
-};
-
 type CommandAction = {
   id: string;
   label: string;
   run: () => Promise<void>;
+};
+
+type SemanticSearchResponse = {
+  items: SemanticSearchItem[];
+  fallback: boolean;
+  explain: string;
+  hints?: string[];
+  mode?: "direct" | "clarify";
+  confidence?: number;
+  clarifyingQuestion?: string;
+  clarifyOptions?: string[];
+  sessionId?: string;
+  trace?: SearchTrace;
 };
 
 const SCOPE_LABELS: Record<ScopeType, string> = {
@@ -48,7 +55,7 @@ const SCOPE_LABELS: Record<ScopeType, string> = {
 };
 
 function App() {
-  const [scope, setScope] = useState<ScopeType>("inbox");
+  const [scope, setScope] = useState<ScopeType>("library");
   const [viewMode, setViewMode] = useState<ViewMode>("compact");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<BookmarkStatus | "all">("all");
@@ -77,20 +84,37 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [migrationPromptOpen, setMigrationPromptOpen] = useState(false);
+  const [quickDockPinnedIds, setQuickDockPinnedIds] = useState<string[]>([]);
+  const [searchTrace, setSearchTrace] = useState<SearchTrace | null>(null);
+  const [searchConfidence, setSearchConfidence] = useState<number | null>(null);
+  const [clarifyPrompt, setClarifyPrompt] = useState("");
+  const [clarifyOptions, setClarifyOptions] = useState<string[]>([]);
+  const [clarifySessionId, setClarifySessionId] = useState<string | null>(null);
 
   const importInput = useRef<HTMLInputElement | null>(null);
   const debouncedQuery = useDebouncedValue(query.trim(), 260);
+  const hasActiveSearch = debouncedQuery.length > 0;
 
   const selectedBookmark = useMemo(() => items.find((item) => item.id === selectedBookmarkId) ?? null, [items, selectedBookmarkId]);
+  const rankedIndexById = useMemo(() => {
+    return new Map(items.map((item, index) => [item.id, index]));
+  }, [items]);
   const quickRailItems = useMemo(() => {
+    if (hasActiveSearch) {
+      return items.slice(0, 20);
+    }
     return items
       .slice()
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, 20);
-  }, [items]);
+  }, [items, hasActiveSearch]);
   const compactItems = useMemo(() => {
+    if (hasActiveSearch) {
+      return items;
+    }
     return items.slice().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }, [items]);
+  }, [items, hasActiveSearch]);
+  const quickDockPinnedSet = useMemo(() => new Set(quickDockPinnedIds), [quickDockPinnedIds]);
 
   const commandActions = useMemo(() => {
     const topCategories = Array.from(
@@ -114,8 +138,7 @@ function App() {
       moveToCategory: handleMoveToCategory,
       emptyTrash: handleEmptyTrash,
       backfillEmbeddings: handleBackfillEmbeddings,
-      backfillFavicons: handleBackfillFavicons,
-      seedDemoData: handleSeedDemoData
+      backfillFavicons: handleBackfillFavicons
     });
   }, [selectedBookmark, categoryRules, categories, items, scope]);
 
@@ -143,9 +166,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void reloadMeta();
     void refreshAuthState();
+    void reloadQuickDockState();
   }, []);
+
+  useEffect(() => {
+    void reloadMeta();
+  }, [scope]);
 
   useEffect(() => {
     void reloadItems();
@@ -171,7 +198,9 @@ function App() {
       let rulesResponse: { items: CategoryRule[] } | undefined;
 
       try {
-        facetResponse = await sendRuntimeMessage<{ categories: FacetEntry[]; tags: FacetEntry[]; statuses: StatusFacet[] }>("manager/facets");
+        facetResponse = await sendRuntimeMessage<{ categories: FacetEntry[]; tags: FacetEntry[]; statuses: StatusFacet[] }>("manager/facets", {
+          scope
+        });
       } catch (facetError) {
         if (!isUnknownMessageTypeError(facetError, "manager/facets")) {
           throw facetError;
@@ -189,7 +218,7 @@ function App() {
 
       if (!facetResponse) {
         const listFallback = await sendRuntimeMessage<{ items: BookmarkItem[] }>("manager/list", {
-          scope: "library",
+          scope,
           limit: 600
         });
         facetResponse = computeFallbackFacets(listFallback.items);
@@ -210,6 +239,20 @@ function App() {
       setAuthState(response);
     } catch (authError) {
       setError(toErrorMessage(authError));
+    }
+  }
+
+  async function reloadQuickDockState() {
+    try {
+      const response = await sendRuntimeMessage<{ pinnedIds?: string[] }>("quickDock/getState", {
+        currentUrl: ""
+      });
+      setQuickDockPinnedIds(Array.isArray(response.pinnedIds) ? response.pinnedIds : []);
+    } catch (dockError) {
+      if (!isUnknownMessageTypeError(dockError, "quickDock/getState")) {
+        setError(toErrorMessage(dockError));
+      }
+      setQuickDockPinnedIds([]);
     }
   }
 
@@ -297,32 +340,47 @@ function App() {
     }
   }
 
-  async function reloadItems() {
+  async function reloadItems(input?: { clarificationAnswer?: string; sessionId?: string }) {
     setLoading(true);
     setError("");
 
     try {
       if (debouncedQuery) {
         try {
-          const response = await sendRuntimeMessage<{
-            items: SemanticSearchItem[];
-            fallback: boolean;
-            explain: string;
-            hints?: string[];
-          }>("manager/searchSemantic", {
+          const response = await sendRuntimeMessage<SemanticSearchResponse>("manager/searchSemantic", {
             query: debouncedQuery,
             scope,
-            limit: 120
+            limit: 120,
+            clarificationAnswer: input?.clarificationAnswer,
+            sessionId: input?.sessionId
           });
 
           const filtered = applyClientFilters(response.items, statusFilter, categoryFilter, tagFilter);
           setItems(filtered);
+          setSearchTrace(response.trace ?? null);
+          setSearchConfidence(typeof response.confidence === "number" ? response.confidence : null);
           const hintText = (response.hints ?? []).join(" | ");
           const filterText = summarizeClientFilters(statusFilter, categoryFilter, tagFilter);
-          if (response.fallback) {
-            setStatusHint(`Fallback mode: ${response.explain}${hintText ? ` | ${hintText}` : ""}${filterText ? ` | ${filterText}` : ""}`);
+          if (response.mode === "clarify" && response.clarifyingQuestion) {
+            setClarifyPrompt(response.clarifyingQuestion);
+            setClarifyOptions(response.clarifyOptions ?? []);
+            setClarifySessionId(response.sessionId ?? null);
+            setStatusHint(
+              `Low confidence (${(response.confidence ?? 0).toFixed(2)}), clarify intent first${hintText ? ` | ${hintText}` : ""}${
+                filterText ? ` | ${filterText}` : ""
+              }`
+            );
           } else {
-            setStatusHint(`Semantic search active${hintText ? ` | ${hintText}` : ""}${filterText ? ` | ${filterText}` : ""}`);
+            setClarifyPrompt("");
+            setClarifyOptions([]);
+            setClarifySessionId(null);
+            if (response.fallback) {
+              setStatusHint(
+                `Fallback mode: ${response.explain}${hintText ? ` | ${hintText}` : ""}${filterText ? ` | ${filterText}` : ""}`
+              );
+            } else {
+              setStatusHint(`Semantic search active${hintText ? ` | ${hintText}` : ""}${filterText ? ` | ${filterText}` : ""}`);
+            }
           }
         } catch (semanticError) {
           if (!isUnknownMessageTypeError(semanticError, "manager/searchSemantic")) {
@@ -342,6 +400,11 @@ function App() {
             searchSignals: item.searchSignals ?? {}
           }));
           setItems(mapped);
+          setSearchTrace(null);
+          setSearchConfidence(null);
+          setClarifyPrompt("");
+          setClarifyOptions([]);
+          setClarifySessionId(null);
           setStatusHint("语义搜索接口不可用，已自动降级到本地检索（建议重载扩展）");
         }
       } else {
@@ -360,6 +423,11 @@ function App() {
         }));
 
         setItems(mapped);
+        setSearchTrace(null);
+        setSearchConfidence(null);
+        setClarifyPrompt("");
+        setClarifyOptions([]);
+        setClarifySessionId(null);
         setStatusHint("Ready");
       }
     } catch (loadError) {
@@ -370,7 +438,19 @@ function App() {
   }
 
   async function reloadAll() {
-    await Promise.all([reloadMeta(), reloadItems(), refreshAuthState()]);
+    await Promise.all([reloadMeta(), reloadItems(), refreshAuthState(), reloadQuickDockState()]);
+  }
+
+  async function handlePinToDock(itemId: string) {
+    await sendRuntimeMessage("quickDock/pin", { bookmarkId: itemId });
+    await reloadQuickDockState();
+    setStatusHint("Pinned to QuickDock");
+  }
+
+  async function handleUnpinFromDock(itemId: string) {
+    await sendRuntimeMessage("quickDock/unpin", { bookmarkId: itemId });
+    await reloadQuickDockState();
+    setStatusHint("Removed from QuickDock");
   }
 
   async function handleSave(
@@ -525,23 +605,6 @@ function App() {
     }
   }
 
-  async function handleSeedDemoData() {
-    try {
-      const result = await sendRuntimeMessage<SeedDemoResult>("manager/seedDemoData", {
-        count: 50,
-        overwrite: false
-      });
-      setStatusHint(`Demo seeded: +${result.created} created, ${result.updated} updated (requested ${result.requested})`);
-      setScope("library");
-      await reloadAll();
-    } catch (seedError) {
-      if (!isUnknownMessageTypeError(seedError, "manager/seedDemoData")) {
-        throw seedError;
-      }
-      setStatusHint("当前后台不支持 demo 注入，请在扩展管理页点击“重新加载”后重试");
-    }
-  }
-
   async function handleExport() {
     const response = await sendRuntimeMessage<{ items: BookmarkItem[]; categoryRules?: CategoryRule[] }>("manager/export");
     const blob = new Blob([
@@ -557,7 +620,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `autonote-v2-export-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `musemark-export-${new Date().toISOString().slice(0, 10)}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -646,14 +709,22 @@ function App() {
     }
 
     for (const [category, columnItems] of map.entries()) {
-      columnItems.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      if (hasActiveSearch) {
+        columnItems.sort((left, right) => {
+          const leftRank = rankedIndexById.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+          const rightRank = rankedIndexById.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+          return leftRank - rightRank;
+        });
+      } else {
+        columnItems.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      }
       if (columnItems.length === 0 && category !== "Uncategorized" && !pinnedRules.includes(category)) {
         map.delete(category);
       }
     }
 
     return map;
-  }, [items, categoryRules]);
+  }, [items, categoryRules, hasActiveSearch, rankedIndexById]);
 
   const topCategorySuggestions = useMemo(() => {
     return Array.from(new Set([...categoryRules.map((rule) => rule.canonical), ...categories.map((entry) => entry.value)])).slice(0, 8);
@@ -678,7 +749,7 @@ function App() {
       <header class="topbar">
         <div class="title-row">
           <div>
-            <h1>AutoNote V2</h1>
+            <h1>MuseMark</h1>
             <p>AI associative retrieval, category boards, and full lifecycle CRUD.</p>
           </div>
 
@@ -713,11 +784,13 @@ function App() {
         </div>
 
         <div class="search-row">
-          <input
-            value={query}
-            onInput={(event) => setQuery((event.currentTarget as HTMLInputElement).value)}
-            placeholder="Ask naturally: the AI agents benchmark article I saw last week"
-          />
+          <div class="search-shell">
+            <input
+              value={query}
+              onInput={(event) => setQuery((event.currentTarget as HTMLInputElement).value)}
+              placeholder="Ask naturally: the AI agents benchmark article I saw last week"
+            />
+          </div>
           <button class="btn" onClick={() => void reloadItems()}>
             Search
           </button>
@@ -740,9 +813,6 @@ function App() {
           </button>
           <button class="btn" onClick={() => void handleBackfillFavicons()}>
             Backfill favicons
-          </button>
-          <button class="btn" onClick={() => void handleSeedDemoData()}>
-            Seed 50 demo bookmarks
           </button>
           <button class="btn" onClick={() => void handleExport()}>
             Export
@@ -844,6 +914,60 @@ function App() {
 
       <section class="status-line">{statusHint}</section>
 
+      {clarifyPrompt && clarifyOptions.length > 0 && (
+        <section class="clarify-box">
+          <strong>{clarifyPrompt}</strong>
+          <div class="clarify-actions">
+            {clarifyOptions.map((option) => (
+              <button
+                key={option}
+                class="chip"
+                onClick={() =>
+                  void reloadItems({
+                    clarificationAnswer: option,
+                    sessionId: clarifySessionId ?? undefined
+                  })
+                }
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {searchTrace && (
+        <section class="trace-box">
+          <div class="trace-head">
+            <strong>Search Trace</strong>
+            <span class="muted">Confidence: {searchConfidence !== null ? searchConfidence.toFixed(2) : "-"}</span>
+          </div>
+          <div class="trace-meta">
+            <span>Intent: {searchTrace.intentType}</span>
+            <span>Web: {searchTrace.webUsed ? "on" : "off"}</span>
+            <span>Reason: {searchTrace.decisionReason}</span>
+          </div>
+          <div class="trace-meta">
+            <span>Query: {searchTrace.effectiveQuery || "-"}</span>
+            <span>Web note: {searchTrace.webReason || "-"}</span>
+          </div>
+          {searchTrace.expandedTerms.length > 0 && (
+            <div class="trace-meta">
+              <span>Expanded: {searchTrace.expandedTerms.join(", ")}</span>
+            </div>
+          )}
+          {searchTrace.scoreBreakdown.slice(0, 3).map((entry) => (
+            <div class="trace-row" key={entry.bookmarkId}>
+              <span>{entry.title}</span>
+              <span>
+                F {entry.finalScore.toFixed(3)} | L {entry.lexicalScore.toFixed(2)} | S {entry.semanticScore.toFixed(2)} | T{" "}
+                {entry.taxonomyScore.toFixed(2)}
+              </span>
+            </div>
+          ))}
+        </section>
+      )}
+
       {error && <section class="error-box">{error}</section>}
       {loading && <section class="empty">Loading bookmarks...</section>}
       {!loading && items.length === 0 && <section class="empty">No bookmarks for current filters.</section>}
@@ -921,7 +1045,7 @@ function App() {
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => {
                     event.preventDefault();
-                    const id = event.dataTransfer?.getData("text/autonote-bookmark-id");
+                    const id = event.dataTransfer?.getData("text/musemark-bookmark-id");
                     if (!id) {
                       return;
                     }
@@ -938,6 +1062,7 @@ function App() {
                       <BookmarkCard
                         key={item.id}
                         item={item}
+                        dockPinned={quickDockPinnedSet.has(item.id)}
                         scope={scope}
                         categorySuggestions={topCategorySuggestions}
                         tagSuggestions={tags.slice(0, 12).map((entry) => entry.value)}
@@ -949,6 +1074,8 @@ function App() {
                         onDeletePermanent={handleDeletePermanent}
                         onRetryAi={handleRetryAi}
                         onMoveToCategory={handleMoveToCategory}
+                        onPinToDock={handlePinToDock}
+                        onUnpinFromDock={handleUnpinFromDock}
                       />
                     ))}
                   </div>
@@ -974,6 +1101,7 @@ function App() {
             <BookmarkCard
               key={selectedBookmark.id}
               item={selectedBookmark}
+              dockPinned={quickDockPinnedSet.has(selectedBookmark.id)}
               scope={scope}
               categorySuggestions={topCategorySuggestions}
               tagSuggestions={tags.slice(0, 12).map((entry) => entry.value)}
@@ -985,6 +1113,8 @@ function App() {
               onDeletePermanent={handleDeletePermanent}
               onRetryAi={handleRetryAi}
               onMoveToCategory={handleMoveToCategory}
+              onPinToDock={handlePinToDock}
+              onUnpinFromDock={handleUnpinFromDock}
             />
           </aside>
         </div>
@@ -994,7 +1124,7 @@ function App() {
         <div class="auth-overlay" onClick={() => setAuthModalOpen(false)}>
           <section class="auth-modal" onClick={(event) => event.stopPropagation()}>
             <div class="auth-head">
-              <h3>{authState.mode === "authenticated" ? "Account" : "Sign in to AutoNote"}</h3>
+              <h3>{authState.mode === "authenticated" ? "Account" : "Sign in to MuseMark"}</h3>
               <button class="btn" onClick={() => setAuthModalOpen(false)}>
                 Close
               </button>
@@ -1186,6 +1316,7 @@ function buildFaviconCandidates(item: { favIconUrl?: string; url: string; domain
 
 function BookmarkCard(props: {
   item: SemanticSearchItem;
+  dockPinned: boolean;
   scope: ScopeType;
   variant?: "feed" | "detail";
   categorySuggestions: string[];
@@ -1200,9 +1331,12 @@ function BookmarkCard(props: {
   onDeletePermanent: (id: string) => Promise<void>;
   onRetryAi: (id: string) => Promise<void>;
   onMoveToCategory: (id: string, category?: string) => Promise<void>;
+  onPinToDock: (id: string) => Promise<void>;
+  onUnpinFromDock: (id: string) => Promise<void>;
 }) {
   const {
     item,
+    dockPinned,
     scope,
     variant = "feed",
     categorySuggestions,
@@ -1213,7 +1347,9 @@ function BookmarkCard(props: {
     onRestore,
     onDeletePermanent,
     onRetryAi,
-    onMoveToCategory
+    onMoveToCategory,
+    onPinToDock,
+    onUnpinFromDock
   } = props;
 
   const [userNote, setUserNote] = useState(item.userNote ?? "");
@@ -1272,12 +1408,17 @@ function BookmarkCard(props: {
     "Uncategorized",
     ...categorySuggestions.filter((value) => value && value !== item.category)
   ].slice(0, 6);
+  const hasSearchSignals =
+    Number(item.searchSignals?.lexicalScore ?? 0) > 0 ||
+    Number(item.searchSignals?.semanticScore ?? 0) > 0 ||
+    Number(item.searchSignals?.taxonomyScore ?? 0) > 0 ||
+    Number(item.searchSignals?.recencyScore ?? 0) > 0;
 
   return (
     <article
       class={`bookmark-card ${item.status} ${variant}`}
       draggable={variant !== "detail" && scope !== "trash"}
-      onDragStart={(event) => event.dataTransfer?.setData("text/autonote-bookmark-id", item.id)}
+      onDragStart={(event) => event.dataTransfer?.setData("text/musemark-bookmark-id", item.id)}
       onClick={() => {
         if (variant !== "detail") {
           onSelect();
@@ -1305,6 +1446,12 @@ function BookmarkCard(props: {
 
       {item.aiSummary && <div class="summary">{item.aiSummary}</div>}
       {item.whyMatched && <div class="match-note">Why matched: {item.whyMatched}</div>}
+      {hasSearchSignals && (
+        <div class="score-note">
+          Scores: L {Number(item.searchSignals.lexicalScore ?? 0).toFixed(2)} | S {Number(item.searchSignals.semanticScore ?? 0).toFixed(2)} | T{" "}
+          {Number(item.searchSignals.taxonomyScore ?? 0).toFixed(2)} | R {Number(item.searchSignals.recencyScore ?? 0).toFixed(2)}
+        </div>
+      )}
 
       <div class="tag-editor">
         {tags.map((tag) => (
@@ -1363,6 +1510,9 @@ function BookmarkCard(props: {
         <a class="btn" href={item.url} target="_blank" rel="noreferrer">
           Open
         </a>
+        <button class={`btn ${dockPinned ? "primary" : ""}`} onClick={() => void (dockPinned ? onUnpinFromDock(item.id) : onPinToDock(item.id))}>
+          {dockPinned ? "Unpin Dock" : "Pin to Dock"}
+        </button>
         <button class="btn primary" disabled={saving} onClick={() => void saveCard()}>
           {saving ? "Saving..." : "Save"}
         </button>
@@ -1473,7 +1623,6 @@ function buildCommandActions(input: {
   emptyTrash: () => Promise<void>;
   backfillEmbeddings: () => Promise<void>;
   backfillFavicons: () => Promise<void>;
-  seedDemoData: () => Promise<void>;
 }): CommandAction[] {
   const actions: CommandAction[] = [
     {
@@ -1490,11 +1639,6 @@ function buildCommandActions(input: {
       id: "favicon-backfill",
       label: "Backfill missing favicons",
       run: input.backfillFavicons
-    },
-    {
-      id: "seed-demo",
-      label: "Seed 50 demo bookmarks",
-      run: input.seedDemoData
     }
   ];
 

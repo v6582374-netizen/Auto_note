@@ -1,7 +1,7 @@
 {
-  "name": "auto_note",
+  "name": "musemark",
   "version": "0.1.0",
-  "description": "AutoNote Chrome extension for AI powered bookmarking",
+  "description": "MuseMark Chrome extension for AI powered bookmarking",
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",

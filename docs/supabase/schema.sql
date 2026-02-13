@@ -1,4 +1,4 @@
--- AutoNote Store-Ready V1 Supabase schema (US region project)
+-- MuseMark Store-Ready V1 Supabase schema (US region project)
 -- Run in Supabase SQL editor.
 
 create extension if not exists "pgcrypto";

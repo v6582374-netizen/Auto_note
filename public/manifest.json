@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "AutoNote",
+  "name": "MuseMark",
   "version": "0.1.1",
   "description": "AI powered bookmark capture and classification workflow.",
-  "permissions": ["storage", "scripting", "activeTab", "commands", "notifications", "alarms", "identity", "permissions"],
+  "permissions": ["storage", "scripting", "activeTab", "commands", "notifications", "alarms", "identity"],
   "optional_host_permissions": ["https://*/*"],
   "externally_connectable": {
-    "matches": ["https://auto-note.vercel.app/*"]
+    "matches": ["https://bridge.musemark.app/*"]
   },
   "background": {
     "service_worker": "background.js",
@@ -19,7 +19,7 @@
     "128": "icon-128.png"
   },
   "action": {
-    "default_title": "Open AutoNote Library",
+    "default_title": "Open MuseMark Library",
     "default_icon": {
       "16": "icon-16.png",
       "32": "icon-32.png",

@@ -13,27 +13,63 @@ import type {
   CapturePayload,
   CategoryRule,
   ClassifyOutput,
+  DockEntry,
+  DockItemPreference,
+  DockLayoutState,
+  DockProfile,
+  DockRankingState,
   ExtensionSettings,
   RankingWeights,
+  SearchScoreBreakdown,
+  SearchTrace,
   SemanticSearchItem
 } from "../shared/types";
 
-const PROMPT_VERSION = "v2";
+const PROMPT_VERSION = "current";
 const EMBEDDING_TIMEOUT_MS = 3_000;
+const WEB_AUGMENT_TIMEOUT_MS = 5_000;
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_BATCH_DELAY_MS = 1_200;
+const TYPE_RECLASSIFY_BATCH_SIZE = 30;
+const TYPE_RECLASSIFY_BATCH_DELAY_MS = 800;
 const JOB_LEASE_MS = 90_000;
 const BACKFILL_JOB_ID = "embedding_backfill";
+const TYPE_RECLASSIFY_JOB_ID = "type_reclassify";
 const TRASH_CLEANUP_JOB_ID = "trash_cleanup";
 const SYNC_JOB_ID = "cloud_sync";
-const ALARM_BACKFILL = "autonote.embedding.backfill";
-const ALARM_TRASH_CLEANUP = "autonote.trash.cleanup";
-const ALARM_SYNC = "autonote.cloud.sync";
-const STORAGE_AUDIT_KEY = "autonote_last_migration_audit_at";
-const STORAGE_LAST_CLEANUP_KEY = "autonote_last_cleanup_at";
-const STORAGE_DEMO_SEEDED_KEY = "autonote_demo_seeded";
-const STORAGE_AUTH_STATE_KEY = "autonote_auth_state";
+const LEGACY_PREFIX = ["auto", "note"].join("");
+const ALARM_BACKFILL = `${LEGACY_PREFIX}.embedding.backfill`;
+const ALARM_TRASH_CLEANUP = `${LEGACY_PREFIX}.trash.cleanup`;
+const ALARM_SYNC = `${LEGACY_PREFIX}.cloud.sync`;
+const STORAGE_AUDIT_KEY = `${LEGACY_PREFIX}_last_migration_audit_at`;
+const STORAGE_LAST_CLEANUP_KEY = `${LEGACY_PREFIX}_last_cleanup_at`;
+const STORAGE_DEMO_PURGED_KEY = `${LEGACY_PREFIX}_demo_purged_v1`;
+const STORAGE_TYPE_RECLASSIFY_DONE_KEY = `${LEGACY_PREFIX}_reclassify_v1_done`;
+const STORAGE_AUTH_STATE_KEY = `${LEGACY_PREFIX}_auth_state`;
+const STORAGE_QUICKDOCK_PROFILES_KEY = `${LEGACY_PREFIX}_quickdock_profiles_v1`;
+const STORAGE_QUICKDOCK_PREFS_KEY = `${LEGACY_PREFIX}_quickdock_prefs_v1`;
+const STORAGE_QUICKDOCK_LAYOUT_KEY = `${LEGACY_PREFIX}_quickdock_layout_v1`;
 const BRIDGE_STATE_TTL_MS = 10 * 60 * 1000;
+const QUICKDOCK_DEFAULT_PROFILE_ID = "default";
+const QUICKDOCK_CANDIDATE_LIMIT = 300;
+const QUICKDOCK_EVENT_WINDOW_DAYS = 30;
+const QUICKDOCK_MAX_EVENT_LOG = 120;
+const SEARCH_CLARIFY_SESSION_TTL_MS = 10 * 60 * 1000;
+
+const BOOKMARK_TYPE_CATEGORIES = [
+  "个人博客",
+  "官方文档",
+  "网络安全",
+  "期刊论文",
+  "科技工具",
+  "资源网站",
+  "新闻媒体",
+  "社区论坛",
+  "视频课程",
+  "代码仓库"
+] as const;
+
+const BOOKMARK_TYPE_FALLBACK = "资源网站";
 
 type AuthSession = {
   accessToken: string;
@@ -94,6 +130,7 @@ type CloudCategoryRuleRow = {
 };
 
 type ManagerScope = "inbox" | "library" | "trash";
+type BookmarkTypeCategory = (typeof BOOKMARK_TYPE_CATEGORIES)[number];
 
 type CaptureSession = {
   sessionId: string;
@@ -118,6 +155,12 @@ type SearchSemanticPayload = {
   query: string;
   scope?: ManagerScope;
   limit?: number;
+  clarificationAnswer?: string;
+  sessionId?: string;
+};
+
+type ManagerFacetsPayload = {
+  scope?: ManagerScope;
 };
 
 type UpdateBookmarkPayload = {
@@ -130,8 +173,55 @@ type UpdateBookmarkPayload = {
   locked?: boolean;
 };
 
+type QuickDockGetStatePayload = {
+  currentUrl?: string;
+};
+
+type QuickDockListEntriesPayload = {
+  currentUrl?: string;
+  profileId?: string;
+  limit?: number;
+};
+
+type QuickDockOpenPayload = {
+  id?: string;
+  url?: string;
+  action?: "open_library" | "save_current_page";
+  source?: "dock" | "manager" | "command";
+};
+
+type QuickDockPinPayload = {
+  bookmarkId: string;
+};
+
+type QuickDockDismissPayload = {
+  bookmarkId: string;
+  days?: number;
+};
+
+type QuickDockUpdateLayoutPayload = {
+  mode?: DockLayoutState["mode"];
+  pinned?: boolean;
+  activeProfileId?: string;
+};
+
+type QuickDockState = {
+  enabled: boolean;
+  layout: DockLayoutState;
+  profiles: DockProfile[];
+  pinnedIds: string[];
+  entries: DockEntry[];
+};
+
+type QuickDockStorage = {
+  profiles: DockProfile[];
+  prefsById: Map<string, DockItemPreference>;
+  layout: DockLayoutState;
+};
+
 type SearchRankRow = {
   item: BookmarkItem;
+  exactMatchTier: number;
   lexicalScore: number;
   semanticScore: number;
   taxonomyScore: number;
@@ -141,9 +231,30 @@ type SearchRankRow = {
 
 type SearchSemanticResult = {
   items: SemanticSearchItem[];
+  mode: "direct" | "clarify";
+  confidence: number;
+  clarifyingQuestion?: string;
+  clarifyOptions?: string[];
+  sessionId?: string;
+  trace: SearchTrace;
   fallback: boolean;
   explain: string;
   hints: string[];
+};
+
+type WebAugmentResult = {
+  terms: string[];
+  reason: string;
+  used: boolean;
+  degraded: boolean;
+};
+
+type ClarifySession = {
+  id: string;
+  query: string;
+  scope: ManagerScope;
+  options: string[];
+  createdAt: number;
 };
 
 type JobState = {
@@ -157,14 +268,14 @@ type JobState = {
   lastError?: string;
 };
 
-class AutoNoteDB extends Dexie {
+class MuseMarkDB extends Dexie {
   bookmarks!: Table<BookmarkItem, string>;
   categoryRules!: Table<CategoryRule, string>;
   jobs!: Table<JobState, string>;
   syncMeta!: Table<SyncMetaRow, string>;
 
   constructor() {
-    super("autonote_db");
+    super(`${LEGACY_PREFIX}_db`);
 
     this.version(1).stores({
       bookmarks: "id,url,canonicalUrl,createdAt,updatedAt,lastSavedAt,status,category,*tags,domain"
@@ -244,31 +355,30 @@ class AutoNoteDB extends Dexie {
   }
 }
 
-const db = new AutoNoteDB();
+const db = new MuseMarkDB();
 const captureSessions = new Map<string, CaptureSession>();
 const embeddingInFlight = new Set<string>();
+const clarifySessions = new Map<string, ClarifySession>();
 let authStorageCache: AuthStorageState | undefined;
 
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await getSettingsFromStorage();
-  await chrome.storage.local.set({ autonote_settings_initialized: true });
+  await chrome.storage.local.set({
+    [`${LEGACY_PREFIX}_settings_initialized`]: true
+  });
   await saveSettingsToStorage(settings);
   await getAuthStorageState();
   await ensureSyncMetaRow();
-  const demoState = await chrome.storage.local.get(STORAGE_DEMO_SEEDED_KEY);
-  if (!demoState[STORAGE_DEMO_SEEDED_KEY]) {
-    const count = await db.bookmarks.count();
-    if (count === 0) {
-      await seedDemoData({ count: 50, overwrite: false });
-    }
-    await chrome.storage.local.set({ [STORAGE_DEMO_SEEDED_KEY]: true });
-  }
+  await purgeDemoBookmarksOnce();
+  void runTypeReclassifyJobIfNeeded("install");
   await ensureBackgroundAlarms();
   await runMigrationSelfCheckIfNeeded(true);
   void syncNow("install");
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  void purgeDemoBookmarksOnce();
+  void runTypeReclassifyJobIfNeeded("startup");
   void ensureBackgroundAlarms();
   void runMigrationSelfCheckIfNeeded(false);
   void syncNow("startup");
@@ -293,6 +403,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 void ensureBackgroundAlarms();
+void purgeDemoBookmarksOnce();
+void runTypeReclassifyJobIfNeeded("startup");
 void runMigrationSelfCheckIfNeeded(false);
 void getAuthStorageState();
 
@@ -384,7 +496,7 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
       return await searchSemantic((message.payload ?? {}) as SearchSemanticPayload);
 
     case "manager/facets":
-      return getFacetData();
+      return getFacetData(((message.payload ?? {}) as ManagerFacetsPayload).scope);
 
     case "manager/update":
       await updateBookmark((message.payload ?? {}) as UpdateBookmarkPayload);
@@ -414,9 +526,6 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
 
     case "manager/backfillFavicons":
       return await backfillFavicons(message.payload as { limit?: number } | undefined);
-
-    case "manager/seedDemoData":
-      return await seedDemoData(message.payload as { count?: number; overwrite?: boolean } | undefined);
 
     case "manager/categoryRules/list":
       return {
@@ -460,6 +569,31 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
       );
       return { imported: true };
 
+    case "quickDock/getState":
+      return await getQuickDockState((message.payload ?? {}) as QuickDockGetStatePayload);
+
+    case "quickDock/listEntries":
+      return await listQuickDockEntries((message.payload ?? {}) as QuickDockListEntriesPayload);
+
+    case "quickDock/open":
+      return await openQuickDockEntry((message.payload ?? {}) as QuickDockOpenPayload);
+
+    case "quickDock/pin":
+      return await pinQuickDockItem((message.payload ?? {}) as QuickDockPinPayload);
+
+    case "quickDock/unpin":
+      return await unpinQuickDockItem((message.payload ?? {}) as QuickDockPinPayload);
+
+    case "quickDock/dismiss":
+      return await dismissQuickDockItem((message.payload ?? {}) as QuickDockDismissPayload);
+
+    case "quickDock/saveCurrent":
+      await handleSaveAndClassifyCommand();
+      return { started: true };
+
+    case "quickDock/updateLayout":
+      return await updateQuickDockLayout((message.payload ?? {}) as QuickDockUpdateLayoutPayload);
+
     case "settings/get":
       return getSettingsFromStorage();
 
@@ -468,7 +602,11 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
       const current = await getSettingsFromStorage();
       const merged = { ...current, ...incoming };
       await requestNetworkPermissionsForSettings(current, merged);
-      return saveSettingsToStorage(merged);
+      const saved = await saveSettingsToStorage(merged);
+      if (saved.classificationMode === "by_type") {
+        void runTypeReclassifyJobIfNeeded("settings");
+      }
+      return saved;
     }
 
     case "settings/test":
@@ -514,7 +652,7 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
   }
 
   if (!isHttpUrl(activeTab.url)) {
-    await notifyUser("AutoNote cannot run on this page type.");
+    await notifyUser("MuseMark cannot run on this page type.");
     return;
   }
 
@@ -527,7 +665,7 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
       files: ["content.js"]
     });
   } catch (error) {
-    await notifyUser(`AutoNote failed to inject on this page: ${toErrorMessage(error)}`);
+    await notifyUser(`MuseMark failed to inject on this page: ${toErrorMessage(error)}`);
     return;
   }
 
@@ -535,14 +673,14 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
   try {
     capture = (await chrome.tabs.sendMessage(activeTab.id, {
       protocolVersion: PROTOCOL_VERSION,
-      type: "autonote/startCapture",
+      type: "musemark/startCapture",
       payload: {
         sessionId,
         maxChars: settings.maxChars
       }
     })) as CapturePayload;
   } catch (error) {
-    await notifyUser(`AutoNote failed to capture this page: ${toErrorMessage(error)}`);
+    await notifyUser(`MuseMark failed to capture this page: ${toErrorMessage(error)}`);
     return;
   }
 
@@ -554,7 +692,7 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
   }
 
   if (!capture?.url || !capture?.title) {
-    await notifyUser("AutoNote captured incomplete page data.");
+    await notifyUser("MuseMark captured incomplete page data.");
     return;
   }
 
@@ -567,7 +705,7 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
   };
   captureSessions.set(sessionId, session);
 
-  await sendMessageToTab(activeTab.id, "autonote/bookmarkLinked", {
+  await sendMessageToTab(activeTab.id, "musemark/bookmarkLinked", {
     sessionId,
     bookmarkId: bookmark.id
   });
@@ -580,7 +718,7 @@ async function handleSaveAndClassifyCommand(): Promise<void> {
       updatedAt: nowIso(),
       syncState: "dirty"
     });
-    await sendMessageToTab(activeTab.id, "autonote/stageError", {
+    await sendMessageToTab(activeTab.id, "musemark/stageError", {
       sessionId,
       error: session.aiDisabledReason
     });
@@ -630,7 +768,7 @@ async function handleSubmitNoteMessage(payload: {
   queueEmbeddingRefresh(bookmarkId);
 
   if (session) {
-    await sendMessageToTab(session.tabId, "autonote/classifyPending", {
+    await sendMessageToTab(session.tabId, "musemark/classifyPending", {
       sessionId: payload.sessionId
     });
   }
@@ -657,7 +795,7 @@ async function handleSubmitNoteMessage(payload: {
       });
 
       if (session) {
-        await sendMessageToTab(session.tabId, "autonote/finalized", {
+        await sendMessageToTab(session.tabId, "musemark/finalized", {
           sessionId: payload.sessionId,
           category: selectedCategory,
           tags: selectedTags
@@ -672,7 +810,7 @@ async function handleSubmitNoteMessage(payload: {
       syncState: "dirty"
     });
     if (session) {
-      await sendMessageToTab(session.tabId, "autonote/finalized", {
+      await sendMessageToTab(session.tabId, "musemark/finalized", {
         sessionId: payload.sessionId,
         category: undefined,
         tags: []
@@ -714,7 +852,7 @@ async function handleSubmitNoteMessage(payload: {
       });
 
       if (session) {
-        await sendMessageToTab(session.tabId, "autonote/finalized", {
+        await sendMessageToTab(session.tabId, "musemark/finalized", {
           sessionId: payload.sessionId,
           category: selectedCategory,
           tags: selectedTags
@@ -726,7 +864,7 @@ async function handleSubmitNoteMessage(payload: {
 
     await markBookmarkError(bookmarkId, "AI key is missing. Configure it in Options.", settings);
     if (session) {
-      await sendMessageToTab(session.tabId, "autonote/stageError", {
+      await sendMessageToTab(session.tabId, "musemark/stageError", {
         sessionId: payload.sessionId,
         error: "AI key is missing. Configure it in Options."
       });
@@ -769,7 +907,7 @@ async function handleSubmitNoteMessage(payload: {
     });
 
     if (session) {
-      await sendMessageToTab(session.tabId, "autonote/finalized", {
+      await sendMessageToTab(session.tabId, "musemark/finalized", {
         sessionId: payload.sessionId,
         category: classify.category,
         tags: classify.tags
@@ -780,7 +918,7 @@ async function handleSubmitNoteMessage(payload: {
   } catch (error) {
     await markBookmarkError(bookmarkId, toErrorMessage(error), settings);
     if (session) {
-      await sendMessageToTab(session.tabId, "autonote/stageError", {
+      await sendMessageToTab(session.tabId, "musemark/stageError", {
         sessionId: payload.sessionId,
         error: toErrorMessage(error)
       });
@@ -804,7 +942,7 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
       updatedAt: nowIso(),
       syncState: "dirty"
     });
-    await sendMessageToTab(session.tabId, "autonote/stageError", {
+    await sendMessageToTab(session.tabId, "musemark/stageError", {
       sessionId,
       error: reason
     });
@@ -813,7 +951,7 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
 
   if (!settings.apiKey) {
     await markBookmarkError(session.bookmarkId, "AI key is missing. Configure it in Options.", settings);
-    await sendMessageToTab(session.tabId, "autonote/stageError", {
+    await sendMessageToTab(session.tabId, "musemark/stageError", {
       sessionId,
       error: "AI key is missing. Configure it in Options."
     });
@@ -851,7 +989,7 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
       queueEmbeddingRefresh(session.bookmarkId);
     }
 
-    await sendMessageToTab(session.tabId, "autonote/stage1Ready", {
+    await sendMessageToTab(session.tabId, "musemark/stage1Ready", {
       sessionId,
       summary: analyze.summary,
       suggestedCategoryCandidates: analyze.suggestedCategoryCandidates,
@@ -862,7 +1000,7 @@ async function runStage1ForSession(sessionId: string): Promise<AnalyzeOutput> {
     return analyze;
   } catch (error) {
     await markBookmarkError(session.bookmarkId, toErrorMessage(error), settings);
-    await sendMessageToTab(session.tabId, "autonote/stageError", {
+    await sendMessageToTab(session.tabId, "musemark/stageError", {
       sessionId,
       error: toErrorMessage(error)
     });
@@ -961,7 +1099,10 @@ async function finalizeBookmarkClassification(input: {
 
   const settings = input.settings ?? (await getSettingsFromStorage());
   const rules = await listCategoryRules();
-  const normalizedCategory = await normalizeCategoryWithRules(input.category, rules, settings);
+  const normalizedCategory =
+    settings.classificationMode === "by_type"
+      ? normalizeTypeCategory(input.category)
+      : await normalizeCategoryWithRules(input.category, rules, settings);
   const normalizedTags = normalizeTags(input.tags);
 
   const aiMeta = {
@@ -1052,12 +1193,20 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
   const query = (payload.query ?? "").trim();
   const scope = payload.scope ?? "library";
   const limit = Number.isFinite(payload.limit) ? Math.max(1, Math.min(200, Number(payload.limit))) : 80;
+  const clarificationAnswer = (payload.clarificationAnswer ?? "").trim();
   const settings = await getSettingsFromStorage();
   const allItems = await db.bookmarks.toArray();
   const items = applyScope(allItems, scope);
   const hiddenTrashCount = scope === "trash" ? 0 : allItems.filter((item) => item.status === "trashed").length;
+  const session = payload.sessionId ? getClarifySession(payload.sessionId) : undefined;
+  const baseQuery = query || session?.query || "";
 
-  if (!query) {
+  let effectiveQuery = baseQuery;
+  if (clarificationAnswer) {
+    effectiveQuery = `${baseQuery} ${clarificationAnswer}`.trim();
+  }
+
+  if (!effectiveQuery) {
     const rankedEmpty = items
       .slice()
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -1072,8 +1221,30 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
           recencyScore: recencyScore(item)
         }
       }));
+    const trace: SearchTrace = {
+      query,
+      effectiveQuery,
+      intentType: "empty",
+      webUsed: false,
+      webReason: "空查询未触发联网补充",
+      expandedTerms: [],
+      decisionReason: "空查询返回最近保存结果",
+      scoreBreakdown: rankedEmpty.slice(0, 5).map((item) => ({
+        bookmarkId: item.id,
+        title: item.title,
+        finalScore: 0,
+        exactMatchTier: 0,
+        lexicalScore: 0,
+        semanticScore: 0,
+        taxonomyScore: 0,
+        recencyScore: clamp01(item.searchSignals.recencyScore ?? 0)
+      }))
+    };
     return {
       items: rankedEmpty,
+      mode: "direct",
+      confidence: 0.5,
+      trace,
       fallback: true,
       explain: "空查询返回最近保存结果",
       hints: hiddenTrashCount > 0 ? [`${hiddenTrashCount} 条 Trash 记录已隐藏`] : []
@@ -1082,13 +1253,40 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
 
   const fallbackReason: string[] = [];
   const hints: string[] = [];
+  let webUsed = false;
+  let webReason = "未触发联网补充";
+  const expandedTerms: string[] = [];
+  let fallback = false;
+  const intentType = detectSearchIntent(baseQuery, clarificationAnswer);
+
+  if (
+    settings.webAugmentEnabled &&
+    settings.maxWebAugmentPerQuery > 0 &&
+    intentType === "ambiguous" &&
+    !clarificationAnswer
+  ) {
+    const augment = await augmentIntentWithWeb(settings, effectiveQuery, settings.maxWebAugmentPerQuery);
+    webUsed = augment.used;
+    webReason = augment.reason;
+    expandedTerms.push(...augment.terms);
+    if (augment.degraded && augment.reason) {
+      fallback = true;
+      fallbackReason.push(`联网补充降级: ${augment.reason}`);
+    }
+  }
+
+  const queryWithExpandedTerms = [effectiveQuery, ...expandedTerms].join(" ").trim();
+  const normalizedQuery = normalizeLookup(queryWithExpandedTerms);
+  const queryLooksLikeUrl = /^https?:\/\//i.test(queryWithExpandedTerms) || queryWithExpandedTerms.includes("www.");
+  const baseTokens = tokenize(queryWithExpandedTerms);
+  const useExpandedTokens = baseTokens.length > 0 && baseTokens.length <= 2;
+  const tokenSet = buildExpandedTokenSet(queryWithExpandedTerms, useExpandedTokens);
 
   let queryEmbedding: number[] | undefined;
-  let fallback = false;
 
   if (settings.semanticSearchEnabled && settings.apiKey && settings.searchFallbackMode !== "lexical_only") {
     try {
-      queryEmbedding = await withTimeout(generateEmbedding(settings, query), EMBEDDING_TIMEOUT_MS, "Embedding timed out");
+      queryEmbedding = await withTimeout(generateEmbedding(settings, queryWithExpandedTerms), EMBEDDING_TIMEOUT_MS, "Embedding timed out");
     } catch (error) {
       fallback = true;
       fallbackReason.push(`语义检索降级: ${toErrorMessage(error)}`);
@@ -1098,17 +1296,47 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
     fallbackReason.push("语义检索未启用、缺少 API key 或当前模式为 lexical_only");
   }
 
-  const tokenSet = buildExpandedTokenSet(query);
+  const recallLimit = Math.max(limit * 6, 120);
+  const recallRows: SearchRankRow[] = items.map((item) => {
+    const lexical = lexicalScore(item, queryWithExpandedTerms, tokenSet);
+    const localSemantic =
+      settings.searchFallbackMode === "lexical_only" ? 0 : localHybridSemanticScore(item, queryWithExpandedTerms, tokenSet);
+    const exactMatchTier = computeExactMatchTier(item, normalizedQuery, queryLooksLikeUrl);
+    const recallScore = exactMatchTier > 0 ? 10 + exactMatchTier + lexical : lexical * 1.1 + localSemantic * 0.4;
+    return {
+      item,
+      exactMatchTier,
+      lexicalScore: lexical,
+      semanticScore: localSemantic,
+      taxonomyScore: 0,
+      recencyScore: 0,
+      finalScore: recallScore
+    };
+  });
+
+  recallRows.sort((left, right) => {
+    if (right.exactMatchTier !== left.exactMatchTier) {
+      return right.exactMatchTier - left.exactMatchTier;
+    }
+    if (right.finalScore !== left.finalScore) {
+      return right.finalScore - left.finalScore;
+    }
+    return right.item.updatedAt.localeCompare(left.item.updatedAt);
+  });
+
+  const candidates = recallRows.slice(0, Math.min(recallLimit, recallRows.length));
   const weights = resolveRankingWeights(settings, Boolean(queryEmbedding));
   const rankRows: SearchRankRow[] = [];
   let noEmbeddingCount = 0;
 
-  for (const item of items) {
-    const lexical = lexicalScore(item, query, tokenSet);
+  for (const candidate of candidates) {
+    const item = candidate.item;
+    const lexical = candidate.lexicalScore;
     const taxonomy = taxonomyScore(item, tokenSet);
     const recency = recencyScore(item);
 
-    let semantic = settings.searchFallbackMode === "lexical_only" ? 0 : localHybridSemanticScore(item, query, tokenSet);
+    let semantic =
+      settings.searchFallbackMode === "lexical_only" ? 0 : localHybridSemanticScore(item, queryWithExpandedTerms, tokenSet);
     if (queryEmbedding && item.embedding && item.embedding.length === queryEmbedding.length) {
       semantic = cosineSimilarity(queryEmbedding, item.embedding);
     } else if (settings.semanticSearchEnabled && settings.apiKey && !item.embedding) {
@@ -1123,6 +1351,7 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
 
     rankRows.push({
       item,
+      exactMatchTier: candidate.exactMatchTier,
       lexicalScore: lexical,
       semanticScore: semantic,
       taxonomyScore: taxonomy,
@@ -1132,13 +1361,35 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
   }
 
   rankRows.sort((left, right) => {
+    if (right.exactMatchTier !== left.exactMatchTier) {
+      return right.exactMatchTier - left.exactMatchTier;
+    }
     if (right.finalScore !== left.finalScore) {
       return right.finalScore - left.finalScore;
     }
     return right.item.updatedAt.localeCompare(left.item.updatedAt);
   });
 
-  const ranked = rankRows.slice(0, limit).map((row) => {
+  const filteredRows = rankRows.filter((row) => {
+    if (row.exactMatchTier > 0) {
+      return true;
+    }
+    if (row.lexicalScore >= 0.12) {
+      return true;
+    }
+    if (row.semanticScore >= 0.16) {
+      return true;
+    }
+    if (row.taxonomyScore >= 0.2) {
+      return true;
+    }
+    return false;
+  });
+
+  const selectedRows = (filteredRows.length > 0 ? filteredRows : rankRows).slice(0, limit);
+  const confidence = computeSearchConfidence(selectedRows);
+
+  const ranked = selectedRows.map((row) => {
     const whyMatched = buildWhyMatched(row);
     return {
       ...row.item,
@@ -1161,21 +1412,85 @@ async function searchSemantic(payload: SearchSemanticPayload): Promise<SearchSem
   if (!queryEmbedding && settings.searchFallbackMode === "lexical_only") {
     hints.push("当前为 lexical_only 模式，语义分数已禁用");
   }
+  if (!useExpandedTokens && baseTokens.length > 2) {
+    hints.push("长查询已禁用同义词扩展，减少误召回");
+  }
+  const exactHitCount = selectedRows.filter((row) => row.exactMatchTier > 0).length;
+  const lexicalHitCount = selectedRows.filter((row) => row.lexicalScore >= 0.35).length;
+  const semanticHitCount = selectedRows.filter((row) => row.semanticScore >= 0.45).length;
+  hints.push(`置信度: ${confidence.toFixed(2)}`);
+  hints.push(`命中统计: exact ${exactHitCount} | lexical ${lexicalHitCount} | semantic ${semanticHitCount}`);
+
+  const shouldClarify =
+    settings.clarifyOnLowConfidence &&
+    intentType === "ambiguous" &&
+    !clarificationAnswer &&
+    selectedRows.length > 1 &&
+    confidence < settings.lowConfidenceThreshold;
+
+  let nextSessionId: string | undefined;
+  let clarifyingQuestion: string | undefined;
+  let clarifyOptions: string[] | undefined;
+  let decisionReason = `直接返回结果（置信度 ${confidence.toFixed(2)}）`;
+
+  if (shouldClarify) {
+    clarifyOptions = buildClarifyOptions(selectedRows);
+    if (clarifyOptions.length > 0) {
+      nextSessionId = createClarifySession({
+        query: baseQuery,
+        scope,
+        options: clarifyOptions
+      });
+      clarifyingQuestion = "你的搜索比较模糊。你更想看哪一类结果？";
+      decisionReason = `置信度 ${confidence.toFixed(2)} 低于阈值 ${settings.lowConfidenceThreshold.toFixed(2)}，触发澄清`;
+      hints.push("已触发澄清问题，建议先选择意图再排序");
+    }
+  } else if (session) {
+    clarifySessions.delete(session.id);
+  }
+
+  const scoreBreakdown: SearchScoreBreakdown[] = selectedRows.slice(0, 8).map((row) => ({
+    bookmarkId: row.item.id,
+    title: row.item.title,
+    finalScore: Number(row.finalScore.toFixed(4)),
+    exactMatchTier: row.exactMatchTier,
+    lexicalScore: Number(clamp01(row.lexicalScore).toFixed(4)),
+    semanticScore: Number(clamp01(row.semanticScore).toFixed(4)),
+    taxonomyScore: Number(clamp01(row.taxonomyScore).toFixed(4)),
+    recencyScore: Number(clamp01(row.recencyScore).toFixed(4))
+  }));
+
+  const trace: SearchTrace = {
+    query,
+    effectiveQuery: queryWithExpandedTerms,
+    intentType,
+    webUsed,
+    webReason,
+    expandedTerms,
+    decisionReason,
+    scoreBreakdown
+  };
 
   return {
     items: ranked,
+    mode: nextSessionId ? "clarify" : "direct",
+    confidence,
+    clarifyingQuestion,
+    clarifyOptions,
+    sessionId: nextSessionId,
+    trace,
     fallback,
     explain: fallbackReason.join("; ") || "使用语义混合检索",
     hints
   };
 }
 
-async function getFacetData(): Promise<{
+async function getFacetData(scope: ManagerScope = "library"): Promise<{
   categories: Array<{ value: string; count: number }>;
   tags: Array<{ value: string; count: number }>;
   statuses: Array<{ value: BookmarkStatus; count: number }>;
 }> {
-  const items = await db.bookmarks.toArray();
+  const items = applyScope(await db.bookmarks.toArray(), scope);
 
   const categoryCounter = new Map<string, number>();
   const tagCounter = new Map<string, number>();
@@ -1183,10 +1498,6 @@ async function getFacetData(): Promise<{
 
   for (const item of items) {
     statusCounter.set(item.status, (statusCounter.get(item.status) ?? 0) + 1);
-
-    if (item.status === "trashed") {
-      continue;
-    }
 
     const category = normalizeCategory(item.category);
     if (category) {
@@ -1208,6 +1519,644 @@ async function getFacetData(): Promise<{
       .map(([value, count]) => ({ value, count }))
       .sort((left, right) => right.count - left.count)
   };
+}
+
+async function getQuickDockState(payload: QuickDockGetStatePayload): Promise<QuickDockState> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const activeProfileId = storage.layout.activeProfileId;
+  const profile = storage.profiles.find((entry) => entry.id === activeProfileId) ?? storage.profiles[0];
+  const entries = settings.quickDockEnabled
+    ? await buildQuickDockEntries({
+        settings,
+        profileId: profile.id,
+        currentUrl: payload.currentUrl,
+        limit: settings.quickDockMaxItems,
+        storage
+      })
+    : [];
+
+  return {
+    enabled: settings.quickDockEnabled,
+    layout: storage.layout,
+    profiles: storage.profiles,
+    pinnedIds: getPinnedIdsForProfile(storage, profile.id),
+    entries
+  };
+}
+
+async function listQuickDockEntries(payload: QuickDockListEntriesPayload): Promise<{
+  entries: DockEntry[];
+  profileId: string;
+  pinnedIds: string[];
+  limit: number;
+}> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const requestedProfile = payload.profileId ? storage.profiles.find((entry) => entry.id === payload.profileId) : undefined;
+  const profileId = requestedProfile?.id ?? storage.layout.activeProfileId;
+  const limit = resolveQuickDockLimit(payload.limit, settings.quickDockMaxItems);
+  const entries = settings.quickDockEnabled
+    ? await buildQuickDockEntries({
+        settings,
+        profileId,
+        currentUrl: payload.currentUrl,
+        limit,
+        storage
+      })
+    : [];
+
+  return {
+    entries,
+    profileId,
+    pinnedIds: getPinnedIdsForProfile(storage, profileId),
+    limit
+  };
+}
+
+async function openQuickDockEntry(payload: QuickDockOpenPayload): Promise<{ opened: boolean; action?: string }> {
+  const actionFromId =
+    payload.id === "action:open_library" ? "open_library" : payload.id === "action:save_current_page" ? "save_current_page" : undefined;
+  const action = payload.action ?? actionFromId;
+  if (action === "open_library") {
+    await openManagerTab();
+    return { opened: true, action };
+  }
+  if (action === "save_current_page") {
+    await handleSaveAndClassifyCommand();
+    return { opened: true, action };
+  }
+
+  let bookmark: BookmarkItem | undefined;
+  if (payload.id) {
+    bookmark = await db.bookmarks.get(payload.id);
+  }
+  const targetUrl = payload.url || bookmark?.url;
+  if (!targetUrl || !isHttpUrl(targetUrl)) {
+    return { opened: false };
+  }
+
+  await chrome.tabs.create({ url: targetUrl });
+
+  if (bookmark) {
+    const settings = await getSettingsFromStorage();
+    const storage = await ensureQuickDockStorage(settings);
+    const current = storage.prefsById.get(bookmark.id) ?? { bookmarkId: bookmark.id };
+    const now = nowIso();
+    const events = (current.dockOpenEvents ?? [])
+      .filter((entry) => {
+        const ms = Date.parse(entry);
+        return Number.isFinite(ms) && ms >= Date.now() - QUICKDOCK_EVENT_WINDOW_DAYS * 86_400_000;
+      })
+      .concat(now)
+      .slice(-QUICKDOCK_MAX_EVENT_LOG);
+    const next: DockItemPreference = {
+      ...current,
+      dockOpenCount: Math.max(0, Number(current.dockOpenCount ?? 0)) + 1,
+      dockLastOpenedAt: now,
+      dockOpenEvents: events
+    };
+    storage.prefsById.set(bookmark.id, next);
+    await chrome.storage.local.set({
+      [STORAGE_QUICKDOCK_PREFS_KEY]: serializeDockPreferences(storage.prefsById)
+    });
+  }
+
+  return { opened: true };
+}
+
+async function pinQuickDockItem(payload: QuickDockPinPayload): Promise<{ pinned: boolean; pinnedIds: string[] }> {
+  const bookmark = await db.bookmarks.get(payload.bookmarkId);
+  if (!bookmark || bookmark.status === "trashed" || !isHttpUrl(bookmark.url)) {
+    return { pinned: false, pinnedIds: [] };
+  }
+
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const activeProfile = storage.profiles.find((entry) => entry.id === storage.layout.activeProfileId) ?? storage.profiles[0];
+  const maxPinOrder = Math.max(
+    0,
+    ...Array.from(storage.prefsById.values())
+      .filter((entry) => entry.pinned)
+      .map((entry) => Number(entry.pinOrder ?? 0))
+  );
+  const current = storage.prefsById.get(payload.bookmarkId) ?? { bookmarkId: payload.bookmarkId };
+  storage.prefsById.set(payload.bookmarkId, {
+    ...current,
+    pinned: true,
+    pinOrder: current.pinOrder && current.pinOrder > 0 ? current.pinOrder : maxPinOrder + 1,
+    dismissedUntil: undefined
+  });
+
+  if (!activeProfile.itemIds.includes(payload.bookmarkId)) {
+    activeProfile.itemIds = [...activeProfile.itemIds, payload.bookmarkId];
+  }
+  activeProfile.updatedAt = nowIso();
+
+  await chrome.storage.local.set({
+    [STORAGE_QUICKDOCK_PROFILES_KEY]: storage.profiles,
+    [STORAGE_QUICKDOCK_PREFS_KEY]: serializeDockPreferences(storage.prefsById)
+  });
+
+  return {
+    pinned: true,
+    pinnedIds: getPinnedIdsForProfile(storage, activeProfile.id)
+  };
+}
+
+async function unpinQuickDockItem(payload: QuickDockPinPayload): Promise<{ pinned: boolean; pinnedIds: string[] }> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const current = storage.prefsById.get(payload.bookmarkId) ?? { bookmarkId: payload.bookmarkId };
+  storage.prefsById.set(payload.bookmarkId, {
+    ...current,
+    pinned: false,
+    pinOrder: undefined
+  });
+
+  const updatedProfiles = storage.profiles.map((profile) => {
+    if (!profile.itemIds.includes(payload.bookmarkId)) {
+      return profile;
+    }
+    return {
+      ...profile,
+      itemIds: profile.itemIds.filter((id) => id !== payload.bookmarkId),
+      updatedAt: nowIso()
+    };
+  });
+  storage.profiles = updatedProfiles;
+
+  await chrome.storage.local.set({
+    [STORAGE_QUICKDOCK_PROFILES_KEY]: storage.profiles,
+    [STORAGE_QUICKDOCK_PREFS_KEY]: serializeDockPreferences(storage.prefsById)
+  });
+
+  return {
+    pinned: false,
+    pinnedIds: getPinnedIdsForProfile(storage, storage.layout.activeProfileId)
+  };
+}
+
+async function dismissQuickDockItem(payload: QuickDockDismissPayload): Promise<{ dismissed: boolean; until: string }> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const days = Number.isFinite(payload.days) ? Math.max(1, Math.min(90, Number(payload.days))) : 30;
+  const until = new Date(Date.now() + days * 86_400_000).toISOString();
+  const current = storage.prefsById.get(payload.bookmarkId) ?? { bookmarkId: payload.bookmarkId };
+  storage.prefsById.set(payload.bookmarkId, {
+    ...current,
+    pinned: false,
+    pinOrder: undefined,
+    dismissedUntil: until
+  });
+
+  storage.profiles = storage.profiles.map((profile) => {
+    if (!profile.itemIds.includes(payload.bookmarkId)) {
+      return profile;
+    }
+    return {
+      ...profile,
+      itemIds: profile.itemIds.filter((id) => id !== payload.bookmarkId),
+      updatedAt: nowIso()
+    };
+  });
+
+  await chrome.storage.local.set({
+    [STORAGE_QUICKDOCK_PROFILES_KEY]: storage.profiles,
+    [STORAGE_QUICKDOCK_PREFS_KEY]: serializeDockPreferences(storage.prefsById)
+  });
+
+  return { dismissed: true, until };
+}
+
+async function updateQuickDockLayout(payload: QuickDockUpdateLayoutPayload): Promise<{ layout: DockLayoutState }> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const selectedMode = normalizeQuickDockMode(payload.mode) ?? storage.layout.mode;
+  const selectedProfileId = payload.activeProfileId && storage.profiles.some((entry) => entry.id === payload.activeProfileId)
+    ? payload.activeProfileId
+    : storage.layout.activeProfileId;
+  const layout: DockLayoutState = {
+    mode: selectedMode,
+    pinned: typeof payload.pinned === "boolean" ? payload.pinned : storage.layout.pinned,
+    activeProfileId: selectedProfileId,
+    updatedAt: nowIso()
+  };
+  storage.layout = layout;
+  await chrome.storage.local.set({
+    [STORAGE_QUICKDOCK_LAYOUT_KEY]: layout
+  });
+  return { layout };
+}
+
+async function buildQuickDockEntries(input: {
+  settings: ExtensionSettings;
+  profileId: string;
+  currentUrl?: string;
+  limit: number;
+  storage: QuickDockStorage;
+}): Promise<DockEntry[]> {
+  const limit = resolveQuickDockLimit(input.limit, input.settings.quickDockMaxItems);
+  if (limit <= 0) {
+    return [];
+  }
+
+  const candidates = await listQuickDockCandidates();
+  const itemById = new Map(candidates.map((item) => [item.id, item]));
+  const pinnedIds = getPinnedIdsForProfile(input.storage, input.profileId);
+
+  const pinnedEntries: DockEntry[] = [];
+  for (const id of pinnedIds) {
+    const item = itemById.get(id);
+    if (!item) {
+      continue;
+    }
+    pinnedEntries.push(createBookmarkDockEntry(item, true));
+  }
+
+  const pinnedSet = new Set<string>(pinnedEntries.map((entry) => entry.id));
+  const remainingSlots = Math.max(0, limit - pinnedEntries.length);
+  const result: DockEntry[] = [...pinnedEntries];
+  if (input.settings.quickDockPinMode === "manual_only") {
+    const trimmed = result.slice(0, limit);
+    if (trimmed.length === 0) {
+      trimmed.push(
+        {
+          id: "action:open_library",
+          kind: "action",
+          title: "Open Library",
+          subtitle: "Manage bookmarks",
+          action: "open_library"
+        },
+        {
+          id: "action:save_current_page",
+          kind: "action",
+          title: "Save Current Page",
+          subtitle: "Capture with MuseMark",
+          action: "save_current_page"
+        }
+      );
+    }
+    return trimmed.slice(0, limit);
+  }
+
+  if (remainingSlots > 0) {
+    const activeItems = candidates.filter((item) => !pinnedSet.has(item.id));
+    const maxRecentClicks = Math.max(
+      1,
+      ...activeItems.map((item) => {
+        const pref = input.storage.prefsById.get(item.id);
+        return getDockRecentClickCount(pref);
+      })
+    );
+
+    const ranked = activeItems
+      .map((item) => {
+        const pref = input.storage.prefsById.get(item.id);
+        const dismissedUntilMs = pref?.dismissedUntil ? Date.parse(pref.dismissedUntil) : Number.NaN;
+        if (Number.isFinite(dismissedUntilMs) && dismissedUntilMs > Date.now()) {
+          return undefined;
+        }
+
+        const clickCount = getDockRecentClickCount(pref);
+        const clickScore = clamp01(Math.log1p(clickCount) / Math.log1p(maxRecentClicks));
+        const openRecencyScore = computeTimeDecayScore(pref?.dockLastOpenedAt, 21);
+        const saveRecencyScore = computeTimeDecayScore(item.lastSavedAt || item.updatedAt || item.createdAt, 28);
+        const affinityScore = computeDomainAffinityScore(input.currentUrl, item);
+        const score = clickScore * 0.45 + openRecencyScore * 0.3 + saveRecencyScore * 0.15 + affinityScore * 0.1;
+
+        return {
+          item,
+          ranking: {
+            score: clamp01(score),
+            clickScore,
+            openRecencyScore,
+            saveRecencyScore,
+            affinityScore
+          } satisfies DockRankingState
+        };
+      })
+      .filter((entry): entry is { item: BookmarkItem; ranking: DockRankingState } => Boolean(entry))
+      .sort((left, right) => {
+        if (right.ranking.score !== left.ranking.score) {
+          return right.ranking.score - left.ranking.score;
+        }
+        return right.item.updatedAt.localeCompare(left.item.updatedAt);
+      })
+      .slice(0, remainingSlots);
+
+    for (const row of ranked) {
+      result.push(createBookmarkDockEntry(row.item, false, row.ranking));
+    }
+  }
+
+  if (result.length < limit) {
+    result.push({
+      id: "action:open_library",
+      kind: "action",
+      title: "Open Library",
+      subtitle: "Manage bookmarks",
+      action: "open_library"
+    });
+  }
+  if (result.length < limit) {
+    result.push({
+      id: "action:save_current_page",
+      kind: "action",
+      title: "Save Current Page",
+      subtitle: "Capture with MuseMark",
+      action: "save_current_page"
+    });
+  }
+
+  return result.slice(0, limit);
+}
+
+async function listQuickDockCandidates(): Promise<BookmarkItem[]> {
+  const all = await db.bookmarks.toArray();
+  return all
+    .filter((item) => item.status !== "trashed")
+    .filter((item) => isHttpUrl(item.url))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, QUICKDOCK_CANDIDATE_LIMIT);
+}
+
+function createBookmarkDockEntry(item: BookmarkItem, pinned: boolean, ranking?: DockRankingState): DockEntry {
+  return {
+    id: item.id,
+    kind: "bookmark",
+    title: item.title || item.url,
+    subtitle: item.domain,
+    url: item.url,
+    domain: item.domain,
+    favIconUrl: item.favIconUrl,
+    pinned,
+    ranking
+  };
+}
+
+async function ensureQuickDockStorage(settings: ExtensionSettings): Promise<QuickDockStorage> {
+  const storage = await chrome.storage.local.get([
+    STORAGE_QUICKDOCK_PROFILES_KEY,
+    STORAGE_QUICKDOCK_PREFS_KEY,
+    STORAGE_QUICKDOCK_LAYOUT_KEY
+  ]);
+
+  const profiles = sanitizeDockProfiles(storage[STORAGE_QUICKDOCK_PROFILES_KEY]);
+  const prefsList = sanitizeDockPreferences(storage[STORAGE_QUICKDOCK_PREFS_KEY]);
+  const layout = sanitizeDockLayout(storage[STORAGE_QUICKDOCK_LAYOUT_KEY], profiles, settings);
+  const prefsById = new Map(prefsList.map((item) => [item.bookmarkId, item]));
+
+  const shouldWriteProfiles =
+    !Array.isArray(storage[STORAGE_QUICKDOCK_PROFILES_KEY]) ||
+    JSON.stringify(storage[STORAGE_QUICKDOCK_PROFILES_KEY]) !== JSON.stringify(profiles);
+  const shouldWritePrefs =
+    !Array.isArray(storage[STORAGE_QUICKDOCK_PREFS_KEY]) ||
+    JSON.stringify(storage[STORAGE_QUICKDOCK_PREFS_KEY]) !== JSON.stringify(prefsList);
+  const shouldWriteLayout =
+    typeof storage[STORAGE_QUICKDOCK_LAYOUT_KEY] !== "object" ||
+    storage[STORAGE_QUICKDOCK_LAYOUT_KEY] === null ||
+    JSON.stringify(storage[STORAGE_QUICKDOCK_LAYOUT_KEY]) !== JSON.stringify(layout);
+
+  if (shouldWriteProfiles || shouldWritePrefs || shouldWriteLayout) {
+    await chrome.storage.local.set({
+      ...(shouldWriteProfiles ? { [STORAGE_QUICKDOCK_PROFILES_KEY]: profiles } : {}),
+      ...(shouldWritePrefs ? { [STORAGE_QUICKDOCK_PREFS_KEY]: prefsList } : {}),
+      ...(shouldWriteLayout ? { [STORAGE_QUICKDOCK_LAYOUT_KEY]: layout } : {})
+    });
+  }
+
+  return {
+    profiles,
+    prefsById,
+    layout
+  };
+}
+
+function sanitizeDockProfiles(raw: unknown): DockProfile[] {
+  if (!Array.isArray(raw)) {
+    return [buildDefaultDockProfile()];
+  }
+
+  const normalized: DockProfile[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as Partial<DockProfile>;
+    const id = typeof candidate.id === "string" && candidate.id.trim() ? candidate.id.trim() : "";
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const name =
+      typeof candidate.name === "string" && candidate.name.trim()
+        ? candidate.name.trim().slice(0, 48)
+        : id === QUICKDOCK_DEFAULT_PROFILE_ID
+          ? "默认 Profile"
+          : "QuickDock Profile";
+    const itemIds = Array.isArray(candidate.itemIds)
+      ? Array.from(
+          new Set(
+            candidate.itemIds
+              .map((item) => (typeof item === "string" ? item.trim() : ""))
+              .filter((item) => Boolean(item))
+          )
+        )
+      : [];
+    normalized.push({
+      id,
+      name,
+      itemIds,
+      createdAt: typeof candidate.createdAt === "string" && candidate.createdAt.trim() ? candidate.createdAt : nowIso(),
+      updatedAt: typeof candidate.updatedAt === "string" && candidate.updatedAt.trim() ? candidate.updatedAt : nowIso()
+    });
+  }
+
+  if (!normalized.some((entry) => entry.id === QUICKDOCK_DEFAULT_PROFILE_ID)) {
+    normalized.unshift(buildDefaultDockProfile());
+  }
+  if (normalized.length === 0) {
+    normalized.push(buildDefaultDockProfile());
+  }
+  return normalized.slice(0, 12);
+}
+
+function sanitizeDockPreferences(raw: unknown): DockItemPreference[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const normalized: DockItemPreference[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as Partial<DockItemPreference>;
+    const bookmarkId = typeof candidate.bookmarkId === "string" ? candidate.bookmarkId.trim() : "";
+    if (!bookmarkId || seen.has(bookmarkId)) {
+      continue;
+    }
+    seen.add(bookmarkId);
+    const events = Array.isArray(candidate.dockOpenEvents)
+      ? candidate.dockOpenEvents
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .slice(-QUICKDOCK_MAX_EVENT_LOG)
+      : undefined;
+    normalized.push({
+      bookmarkId,
+      pinned: Boolean(candidate.pinned),
+      pinOrder: Number.isFinite(candidate.pinOrder) ? Math.max(0, Number(candidate.pinOrder)) : undefined,
+      dismissedUntil:
+        typeof candidate.dismissedUntil === "string" && candidate.dismissedUntil.trim() ? candidate.dismissedUntil : undefined,
+      dockOpenCount: Number.isFinite(candidate.dockOpenCount) ? Math.max(0, Number(candidate.dockOpenCount)) : 0,
+      dockLastOpenedAt:
+        typeof candidate.dockLastOpenedAt === "string" && candidate.dockLastOpenedAt.trim() ? candidate.dockLastOpenedAt : undefined,
+      dockOpenEvents: events
+    });
+  }
+  return normalized.sort((left, right) => Number(left.pinOrder ?? 0) - Number(right.pinOrder ?? 0));
+}
+
+function sanitizeDockLayout(raw: unknown, profiles: DockProfile[], settings: ExtensionSettings): DockLayoutState {
+  const fallback: DockLayoutState = {
+    mode: settings.quickDockCollapsedByDefault ? "collapsed" : "expanded",
+    pinned: false,
+    activeProfileId: profiles[0]?.id ?? QUICKDOCK_DEFAULT_PROFILE_ID,
+    updatedAt: nowIso()
+  };
+
+  if (!raw || typeof raw !== "object") {
+    return fallback;
+  }
+
+  const candidate = raw as Partial<DockLayoutState>;
+  const mode = normalizeQuickDockMode(candidate.mode) ?? fallback.mode;
+  const activeProfileId =
+    typeof candidate.activeProfileId === "string" && profiles.some((entry) => entry.id === candidate.activeProfileId)
+      ? candidate.activeProfileId
+      : fallback.activeProfileId;
+
+  return {
+    mode,
+    pinned: Boolean(candidate.pinned),
+    activeProfileId,
+    updatedAt: typeof candidate.updatedAt === "string" && candidate.updatedAt.trim() ? candidate.updatedAt : nowIso()
+  };
+}
+
+function buildDefaultDockProfile(): DockProfile {
+  const now = nowIso();
+  return {
+    id: QUICKDOCK_DEFAULT_PROFILE_ID,
+    name: "默认 Profile",
+    itemIds: [],
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function serializeDockPreferences(prefsById: Map<string, DockItemPreference>): DockItemPreference[] {
+  return Array.from(prefsById.values()).sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1;
+    }
+    return Number(left.pinOrder ?? 0) - Number(right.pinOrder ?? 0);
+  });
+}
+
+function getPinnedIdsForProfile(storage: QuickDockStorage, profileId: string): string[] {
+  const profile = storage.profiles.find((entry) => entry.id === profileId) ?? storage.profiles[0];
+  const pinnedByPref = new Set(
+    Array.from(storage.prefsById.values())
+      .filter((entry) => entry.pinned)
+      .map((entry) => entry.bookmarkId)
+  );
+
+  const ordered: string[] = [];
+  for (const bookmarkId of profile.itemIds) {
+    if (pinnedByPref.has(bookmarkId)) {
+      ordered.push(bookmarkId);
+    }
+  }
+
+  const extras = Array.from(storage.prefsById.values())
+    .filter((entry) => entry.pinned && !ordered.includes(entry.bookmarkId))
+    .sort((left, right) => Number(left.pinOrder ?? 0) - Number(right.pinOrder ?? 0))
+    .map((entry) => entry.bookmarkId);
+
+  return Array.from(new Set([...ordered, ...extras]));
+}
+
+function resolveQuickDockLimit(input: number | undefined, fallback: number): number {
+  const candidate = Number.isFinite(input) ? Number(input) : fallback;
+  if (candidate <= 0) {
+    return fallback;
+  }
+  return Math.max(2, Math.min(8, Math.round(candidate)));
+}
+
+function getDockRecentClickCount(pref: DockItemPreference | undefined): number {
+  if (!pref) {
+    return 0;
+  }
+  const threshold = Date.now() - QUICKDOCK_EVENT_WINDOW_DAYS * 86_400_000;
+  const events = (pref.dockOpenEvents ?? []).filter((entry) => {
+    const ms = Date.parse(entry);
+    return Number.isFinite(ms) && ms >= threshold;
+  });
+  if (events.length > 0) {
+    return events.length;
+  }
+  return Math.max(0, Number(pref.dockOpenCount ?? 0));
+}
+
+function computeTimeDecayScore(timestamp: string | undefined, halfLifeDays: number): number {
+  if (!timestamp) {
+    return 0;
+  }
+  const ms = Date.parse(timestamp);
+  if (!Number.isFinite(ms)) {
+    return 0;
+  }
+  const ageDays = Math.max(0, (Date.now() - ms) / 86_400_000);
+  return clamp01(Math.exp(-ageDays / Math.max(1, halfLifeDays)));
+}
+
+function computeDomainAffinityScore(currentUrl: string | undefined, item: BookmarkItem): number {
+  const currentHost = tryParseUrl(currentUrl)?.hostname?.toLowerCase() || "";
+  const candidateHost = (item.domain || tryParseUrl(item.url)?.hostname || "").toLowerCase();
+  if (!currentHost || !candidateHost) {
+    return 0;
+  }
+  if (currentHost === candidateHost) {
+    return 1;
+  }
+  if (currentHost.endsWith(`.${candidateHost}`) || candidateHost.endsWith(`.${currentHost}`)) {
+    return 0.7;
+  }
+  const currentRoot = getRootDomain(currentHost);
+  const candidateRoot = getRootDomain(candidateHost);
+  if (currentRoot && candidateRoot && currentRoot === candidateRoot) {
+    return 0.45;
+  }
+  return 0;
+}
+
+function getRootDomain(hostname: string): string {
+  const parts = hostname.split(".").filter(Boolean);
+  if (parts.length <= 2) {
+    return hostname;
+  }
+  return parts.slice(-2).join(".");
+}
+
+function normalizeQuickDockMode(mode: unknown): DockLayoutState["mode"] | undefined {
+  if (mode === "collapsed" || mode === "peek" || mode === "expanded") {
+    return mode;
+  }
+  return undefined;
 }
 
 async function updateBookmark(payload: UpdateBookmarkPayload): Promise<void> {
@@ -2021,7 +2970,7 @@ async function seedDemoData(payload?: { count?: number; overwrite?: boolean }): 
 
   let allExisting = await db.bookmarks.toArray();
   const legacyDemoIds = allExisting
-    .filter((item) => (item.canonicalUrl || item.url || "").includes("demo.autonote.local"))
+    .filter((item) => (item.canonicalUrl || item.url || "").includes("demo.musemark.local"))
     .map((item) => item.id);
   if (legacyDemoIds.length > 0) {
     await db.bookmarks.bulkDelete(legacyDemoIds);
@@ -2302,13 +3251,216 @@ async function runRetentionCleanupJob(): Promise<void> {
     });
 
     if (result.deletedCount > 0) {
-      await notifyUser(`AutoNote cleaned ${result.deletedCount} expired trash items.`);
+      await notifyUser(`MuseMark cleaned ${result.deletedCount} expired trash items.`);
     }
   } catch (error) {
     await releaseJobLock(TRASH_CLEANUP_JOB_ID, {
       lastError: toErrorMessage(error)
     });
   }
+}
+
+async function purgeDemoBookmarksOnce(): Promise<void> {
+  const storage = await chrome.storage.local.get(STORAGE_DEMO_PURGED_KEY);
+  if (storage[STORAGE_DEMO_PURGED_KEY]) {
+    return;
+  }
+
+  const all = await db.bookmarks.toArray();
+  const demoItems = all.filter(isDemoBookmark);
+  if (demoItems.length > 0) {
+    await deleteCloudRowsForBookmarks(demoItems);
+    await db.bookmarks.bulkDelete(demoItems.map((item) => item.id));
+  }
+
+  await chrome.storage.local.set({ [STORAGE_DEMO_PURGED_KEY]: true });
+}
+
+function isDemoBookmark(item: BookmarkItem): boolean {
+  const candidate = `${item.canonicalUrl || ""} ${item.url || ""} ${item.aiSummary || ""} ${item.contentCapture?.textDigest || ""}`.toLowerCase();
+  return candidate.includes("demo.musemark.local") || candidate.includes("demo #") || candidate.includes("demo_digest_");
+}
+
+async function runTypeReclassifyJobIfNeeded(source: "install" | "startup" | "settings"): Promise<void> {
+  const settings = await getSettingsFromStorage();
+  if (settings.classificationMode !== "by_type") {
+    return;
+  }
+
+  const storage = await chrome.storage.local.get(STORAGE_TYPE_RECLASSIFY_DONE_KEY);
+  if (storage[STORAGE_TYPE_RECLASSIFY_DONE_KEY]) {
+    return;
+  }
+
+  for (let round = 0; round < 40; round += 1) {
+    const result = await runTypeReclassifyJob({
+      source,
+      limit: TYPE_RECLASSIFY_BATCH_SIZE,
+      delayMs: TYPE_RECLASSIFY_BATCH_DELAY_MS
+    });
+
+    if (result.completed) {
+      await chrome.storage.local.set({ [STORAGE_TYPE_RECLASSIFY_DONE_KEY]: true });
+      return;
+    }
+
+    if (result.processed === 0) {
+      return;
+    }
+  }
+}
+
+async function runTypeReclassifyJob(input: {
+  source: "install" | "startup" | "settings";
+  limit: number;
+  delayMs: number;
+  resetCursor?: boolean;
+}): Promise<{ processed: number; updated: number; skipped: number; failed: number; completed: boolean }> {
+  const lock = await acquireJobLock(TYPE_RECLASSIFY_JOB_ID);
+  if (!lock.acquired) {
+    return { processed: 0, updated: 0, skipped: 0, failed: 0, completed: false };
+  }
+
+  let processed = 0;
+  let updated = 0;
+  let skipped = 0;
+  let failed = 0;
+  let cursorUpdatedAt = input.resetCursor ? undefined : lock.state.cursorUpdatedAt;
+  let cursorId = input.resetCursor ? undefined : lock.state.cursorId;
+
+  try {
+    const settings = await getSettingsFromStorage();
+    const allCandidates = (await db.bookmarks.toArray())
+      .filter((item) => item.status !== "trashed")
+      .sort(compareByUpdatedAtThenId);
+
+    const startIndex = findStartIndexByCursor(allCandidates, cursorUpdatedAt, cursorId);
+    const batch = allCandidates.slice(startIndex, startIndex + input.limit);
+
+    if (batch.length === 0) {
+      await releaseJobLock(TYPE_RECLASSIFY_JOB_ID, {
+        cursorUpdatedAt: undefined,
+        cursorId: undefined,
+        lastError: undefined
+      });
+      return { processed: 0, updated: 0, skipped: 0, failed: 0, completed: true };
+    }
+
+    for (let index = 0; index < batch.length; index += 1) {
+      const item = batch[index];
+      const checkpointUpdatedAt = item.updatedAt || item.createdAt || nowIso();
+      const checkpointId = item.id;
+      processed += 1;
+
+      try {
+        const result = await reclassifyBookmarkToType(item, settings);
+        if (result) {
+          updated += 1;
+        } else {
+          skipped += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        await persistJobProgress(TYPE_RECLASSIFY_JOB_ID, {
+          lastError: toErrorMessage(error)
+        });
+      }
+
+      cursorUpdatedAt = checkpointUpdatedAt;
+      cursorId = checkpointId;
+
+      if ((index + 1) % BACKFILL_BATCH_SIZE === 0 || index === batch.length - 1) {
+        await persistJobProgress(TYPE_RECLASSIFY_JOB_ID, {
+          cursorUpdatedAt,
+          cursorId
+        });
+        if (index < batch.length - 1) {
+          await sleep(input.delayMs);
+        }
+      }
+    }
+
+    await releaseJobLock(TYPE_RECLASSIFY_JOB_ID, {
+      cursorUpdatedAt,
+      cursorId,
+      lastError: failed > 0 ? `${failed} items failed in current batch` : undefined
+    });
+
+    return { processed, updated, skipped, failed, completed: false };
+  } catch (error) {
+    await releaseJobLock(TYPE_RECLASSIFY_JOB_ID, {
+      cursorUpdatedAt,
+      cursorId,
+      lastError: toErrorMessage(error)
+    });
+    throw error;
+  }
+}
+
+async function reclassifyBookmarkToType(item: BookmarkItem, settings: ExtensionSettings): Promise<boolean> {
+  const excludedPattern = getMatchedExcludedPattern(item.url, settings.excludedUrlPatterns);
+  let nextCategory = inferBookmarkTypeFromMetadata(item);
+  let nextConfidence = clamp01(Number(item.classificationConfidence ?? 0.42));
+
+  if (settings.apiKey && !excludedPattern) {
+    try {
+      const stage1: AnalyzeOutput = {
+        summary: item.aiSummary || `${item.title} (${item.domain})`,
+        keyTopics: tokenize(item.aiSummary || item.title).slice(0, 8),
+        suggestedCategoryCandidates: [nextCategory],
+        suggestedTags: normalizeTags(item.tags ?? []).slice(0, 8),
+        language: "unknown",
+        confidence: 0.5
+      };
+      const classify = await classifyWithAi({
+        settings,
+        bookmark: item,
+        stage1,
+        userNote: item.userNote ?? "",
+        selectedCategory: undefined,
+        selectedTags: item.tags ?? [],
+        topCategories: [...BOOKMARK_TYPE_CATEGORIES],
+        topTags: []
+      });
+      nextCategory = normalizeTypeCategory(classify.category);
+      nextConfidence = clamp01(Number(classify.confidence ?? 0.55));
+    } catch {
+      nextCategory = inferBookmarkTypeFromMetadata(item);
+      nextConfidence = clamp01(Number(item.classificationConfidence ?? 0.42));
+    }
+  }
+
+  const currentCategory = normalizeTypeCategory(item.category);
+  const nextStatus = inferStatus(item.status, nextCategory, item.tags);
+  const unchanged = currentCategory === nextCategory && item.status === nextStatus;
+  if (unchanged) {
+    return false;
+  }
+
+  const updated: BookmarkItem = {
+    ...item,
+    category: nextCategory,
+    status: nextStatus,
+    classificationConfidence: nextConfidence,
+    updatedAt: nowIso(),
+    syncState: "dirty",
+    aiMeta: {
+      provider: "openai_compatible",
+      baseUrl: settings.baseUrl,
+      model: settings.model,
+      promptVersion: PROMPT_VERSION,
+      stage1: item.aiMeta?.stage1,
+      stage2: {
+        finishedAt: nowIso(),
+        confidence: nextConfidence
+      },
+      lastError: excludedPattern ? `AI skipped by privacy rule: ${excludedPattern}` : undefined
+    }
+  };
+  updated.searchText = buildSearchText(updated);
+  await db.bookmarks.put(updated);
+  queueEmbeddingRefresh(updated.id);
+  return true;
 }
 
 async function acquireJobLock(jobId: string): Promise<{ acquired: boolean; state: JobState }> {
@@ -2420,8 +3572,7 @@ async function runEmbeddingRefresh(item: BookmarkItem, settings: ExtensionSettin
   await db.bookmarks.update(item.id, {
     embedding: vector,
     embeddingModel: settings.embeddingModel,
-    embeddingUpdatedAt: nowIso(),
-    updatedAt: nowIso()
+    embeddingUpdatedAt: nowIso()
   });
 
   return true;
@@ -2464,25 +3615,43 @@ async function classifyWithAi(input: {
   topTags: string[];
 }): Promise<ClassifyOutput> {
   const rules = await listCategoryRules();
+  const classificationMode = input.settings.classificationMode === "by_content" ? "by_content" : "by_type";
+  const isTypeMode = classificationMode === "by_type";
 
-  const systemPrompt =
-    "You are an assistant for bookmark organization. Return JSON only with keys: category, tags, shortReason, confidence. category must be a short phrase. tags should be 3-8 concise tags. Prefer existing categories when semantically close.";
+  const systemPrompt = isTypeMode
+    ? `You classify bookmarks by LINK TYPE (site/source type), not by page topic. Return JSON only with keys: category, tags, shortReason, confidence. category must be exactly one of: ${BOOKMARK_TYPE_CATEGORIES.join(
+        ", "
+      )}. If uncertain pick ${BOOKMARK_TYPE_FALLBACK}. tags should be 2-6 concise tags.`
+    : "You are an assistant for bookmark organization. Return JSON only with keys: category, tags, shortReason, confidence. category must be a short phrase. tags should be 3-8 concise tags. Prefer existing categories when semantically close.";
 
-  const userPrompt = [
-    `URL: ${input.bookmark.url}`,
-    `Title: ${input.bookmark.title}`,
-    `Domain: ${input.bookmark.domain}`,
-    `Stage1 summary: ${input.stage1.summary}`,
-    `Stage1 topics: ${input.stage1.keyTopics.join(", ")}`,
-    `Suggested categories: ${input.stage1.suggestedCategoryCandidates.join(", ")}`,
-    `Suggested tags: ${input.stage1.suggestedTags.join(", ")}`,
-    `User note: ${input.userNote || "(none)"}`,
-    `User selected category: ${input.selectedCategory || "(none)"}`,
-    `User selected tags: ${input.selectedTags.join(", ") || "(none)"}`,
-    `Existing top categories: ${input.topCategories.join(", ") || "(none)"}`,
-    `Existing top tags: ${input.topTags.join(", ") || "(none)"}`,
-    `Category rules canonical: ${rules.map((rule) => rule.canonical).join(", ") || "(none)"}`
-  ].join("\n");
+  const userPrompt = isTypeMode
+    ? [
+        `URL: ${input.bookmark.url}`,
+        `Title: ${input.bookmark.title}`,
+        `Domain: ${input.bookmark.domain}`,
+        `Stage1 summary: ${input.stage1.summary}`,
+        `Stage1 topics: ${input.stage1.keyTopics.join(", ")}`,
+        `Suggested tags: ${input.stage1.suggestedTags.join(", ")}`,
+        `User note: ${input.userNote || "(none)"}`,
+        `User selected category: ${input.selectedCategory || "(none)"}`,
+        `User selected tags: ${input.selectedTags.join(", ") || "(none)"}`,
+        `Classify by bookmark link type: source/website nature (e.g., blog, docs, journal, tool), NOT by article topic.`
+      ].join("\n")
+    : [
+        `URL: ${input.bookmark.url}`,
+        `Title: ${input.bookmark.title}`,
+        `Domain: ${input.bookmark.domain}`,
+        `Stage1 summary: ${input.stage1.summary}`,
+        `Stage1 topics: ${input.stage1.keyTopics.join(", ")}`,
+        `Suggested categories: ${input.stage1.suggestedCategoryCandidates.join(", ")}`,
+        `Suggested tags: ${input.stage1.suggestedTags.join(", ")}`,
+        `User note: ${input.userNote || "(none)"}`,
+        `User selected category: ${input.selectedCategory || "(none)"}`,
+        `User selected tags: ${input.selectedTags.join(", ") || "(none)"}`,
+        `Existing top categories: ${input.topCategories.join(", ") || "(none)"}`,
+        `Existing top tags: ${input.topTags.join(", ") || "(none)"}`,
+        `Category rules canonical: ${rules.map((rule) => rule.canonical).join(", ") || "(none)"}`
+      ].join("\n");
 
   const raw = await callChatRaw(input.settings, [
     { role: "system", content: systemPrompt },
@@ -2492,13 +3661,15 @@ async function classifyWithAi(input: {
   const parsed = await parseClassifyOutput(raw, input.settings);
 
   const chosenCategory = normalizeCategory(input.selectedCategory) || parsed.category;
-  const normalizedCategory = await normalizeCategoryWithRules(chosenCategory, rules, input.settings, input.topCategories);
+  const normalizedCategory = isTypeMode
+    ? normalizeTypeCategory(chosenCategory)
+    : await normalizeCategoryWithRules(chosenCategory, rules, input.settings, input.topCategories);
 
   const tags = normalizeTags([...input.selectedTags, ...parsed.tags]);
 
   return {
     ...parsed,
-    category: normalizedCategory || "Uncategorized",
+    category: normalizedCategory || (isTypeMode ? BOOKMARK_TYPE_FALLBACK : "Uncategorized"),
     tags
   };
 }
@@ -2550,6 +3721,74 @@ async function callChatRaw(
   }
 
   throw new Error("AI response did not contain text content.");
+}
+
+async function callWebSearchRaw(settings: ExtensionSettings, query: string): Promise<string> {
+  await ensureUrlPermission(settings.baseUrl, {
+    reason: "AI service",
+    requestIfMissing: false
+  });
+
+  const endpoint = resolveResponsesEndpoint(settings.baseUrl);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.apiKey}`
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      input: [
+        {
+          role: "system",
+          content:
+            "You analyze search intent for bookmark retrieval. Return JSON only with keys aliases, keywords, reason. aliases/keywords should be short strings."
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Query: ${query}\nNeed: infer likely entities, aliases, and concrete keywords for better retrieval.`
+            }
+          ]
+        }
+      ],
+      tools: [{ type: "web_search_preview" }],
+      temperature: 0
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Web augment request failed (${response.status}): ${text.slice(0, 280)}`);
+  }
+
+  const data = (await response.json()) as {
+    output_text?: string;
+    output?: Array<{
+      content?: Array<{
+        type?: string;
+        text?: string;
+      }>;
+    }>;
+  };
+
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  const fallbackText = (data.output ?? [])
+    .flatMap((entry) => entry.content ?? [])
+    .map((part) => (part.type === "text" || part.type === "output_text" ? part.text ?? "" : ""))
+    .join("")
+    .trim();
+
+  if (fallbackText) {
+    return fallbackText;
+  }
+
+  throw new Error("Web augment response is empty.");
 }
 
 async function generateEmbedding(settings: ExtensionSettings, text: string): Promise<number[]> {
@@ -2674,7 +3913,7 @@ async function testAiConnection(): Promise<{ success: boolean; model: string }> 
 }
 
 async function getTopFacets(categoryLimit: number, tagLimit: number): Promise<{ topCategories: string[]; topTags: string[] }> {
-  const facets = await getFacetData();
+  const facets = await getFacetData("library");
   return {
     topCategories: facets.categories.slice(0, categoryLimit).map((entry) => entry.value),
     topTags: facets.tags.slice(0, tagLimit).map((entry) => entry.value)
@@ -2719,6 +3958,113 @@ async function normalizeCategoryWithRules(
   }
 
   return trimmed;
+}
+
+function normalizeTypeCategory(category: string | undefined): BookmarkTypeCategory {
+  const normalized = normalizeLookup(category ?? "");
+  if (!normalized) {
+    return BOOKMARK_TYPE_FALLBACK;
+  }
+
+  for (const candidate of BOOKMARK_TYPE_CATEGORIES) {
+    if (normalizeLookup(candidate) === normalized) {
+      return candidate;
+    }
+  }
+
+  const aliasMap: Record<BookmarkTypeCategory, string[]> = {
+    个人博客: ["blog", "个人", "博客", "medium", "substack", "devto"],
+    官方文档: ["docs", "documentation", "manual", "developer", "api reference", "官方文档"],
+    网络安全: ["security", "infosec", "cve", "owasp", "攻防", "漏洞", "网络安全"],
+    期刊论文: ["paper", "journal", "arxiv", "doi", "论文", "期刊"],
+    科技工具: ["tool", "saas", "app", "platform", "科技工具", "软件"],
+    资源网站: ["resource", "directory", "awesome", "link list", "导航", "资源"],
+    新闻媒体: ["news", "media", "press", "报道", "新闻"],
+    社区论坛: ["community", "forum", "discussion", "reddit", "hn", "社区", "论坛"],
+    视频课程: ["course", "tutorial", "video", "youtube", "bilibili", "课程", "教程"],
+    代码仓库: ["github", "gitlab", "repository", "repo", "源码", "代码仓库"]
+  };
+
+  for (const [candidate, aliases] of Object.entries(aliasMap) as Array<[BookmarkTypeCategory, string[]]>) {
+    if (aliases.some((alias) => normalized.includes(normalizeLookup(alias)))) {
+      return candidate;
+    }
+  }
+
+  const nearest = findNearestCategory(normalized, [...BOOKMARK_TYPE_CATEGORIES]);
+  if (nearest && nearest.similarity >= 0.5) {
+    return nearest.value as BookmarkTypeCategory;
+  }
+
+  return BOOKMARK_TYPE_FALLBACK;
+}
+
+function inferBookmarkTypeFromMetadata(item: Pick<BookmarkItem, "url" | "domain" | "title" | "aiSummary">): BookmarkTypeCategory {
+  const domain = (item.domain ?? "").toLowerCase();
+  const url = (item.url ?? "").toLowerCase();
+  const title = (item.title ?? "").toLowerCase();
+  const summary = (item.aiSummary ?? "").toLowerCase();
+  const text = `${domain} ${url} ${title} ${summary}`;
+
+  const byDomainContains = (values: string[]): boolean => values.some((value) => domain.includes(value));
+  const byTextContains = (values: string[]): boolean => values.some((value) => text.includes(value));
+
+  if (byDomainContains(["github.com", "gitlab.com", "bitbucket.org"]) || byTextContains(["repository", "repo", "source code", "源码"])) {
+    return "代码仓库";
+  }
+  if (
+    byDomainContains(["arxiv.org", "ieeexplore.ieee.org", "acm.org", "nature.com", "sciencedirect.com", "springer.com"]) ||
+    byTextContains(["journal", "paper", "preprint", "doi", "论文"])
+  ) {
+    return "期刊论文";
+  }
+  if (
+    byDomainContains(["owasp.org", "cisa.gov", "nist.gov", "krebsonsecurity.com", "hackerone.com", "mitre.org"]) ||
+    byTextContains(["cve", "vulnerability", "exploit", "security", "网络安全", "漏洞"])
+  ) {
+    return "网络安全";
+  }
+  if (
+    byDomainContains(["developer.", "docs.", "readthedocs.io", "developers.", "learn.microsoft.com", "platform.openai.com"]) ||
+    byTextContains(["documentation", "api reference", "guide", "/docs", "官方文档"])
+  ) {
+    return "官方文档";
+  }
+  if (
+    byDomainContains(["youtube.com", "youtu.be", "bilibili.com", "coursera.org", "udemy.com", "edx.org"]) ||
+    byTextContains(["course", "tutorial video", "lesson", "视频课程"])
+  ) {
+    return "视频课程";
+  }
+  if (
+    byDomainContains(["reddit.com", "news.ycombinator.com", "stackoverflow.com", "lobste.rs", "discourse"]) ||
+    byTextContains(["forum", "discussion", "ask", "community", "论坛"])
+  ) {
+    return "社区论坛";
+  }
+  if (
+    byDomainContains(["nytimes.com", "reuters.com", "theverge.com", "techcrunch.com", "bbc.com", "wsj.com"]) ||
+    byTextContains(["news", "breaking", "报道", "快讯"])
+  ) {
+    return "新闻媒体";
+  }
+  if (
+    byDomainContains(["medium.com", "substack.com", "hashnode.com", "dev.to", "blog"]) ||
+    byTextContains(["blog", "个人博客", "作者"])
+  ) {
+    return "个人博客";
+  }
+  if (
+    byDomainContains(["figma.com", "notion.so", "linear.app", "slack.com", "zapier.com", "openai.com"]) ||
+    byTextContains(["tool", "platform", "saas", "automation", "工具"])
+  ) {
+    return "科技工具";
+  }
+  if (byTextContains(["awesome", "resource", "directory", "library", "导航", "合集", "资源"])) {
+    return "资源网站";
+  }
+
+  return "资源网站";
 }
 
 function findNearestCategory(input: string, categories: string[]): { value: string; similarity: number } | undefined {
@@ -2928,6 +4274,7 @@ async function getAuthState(): Promise<AuthState> {
 async function getAuthDebugState(): Promise<Record<string, unknown>> {
   const auth = await getAuthStorageState();
   const meta = await ensureSyncMetaRow();
+  const quickDock = await getQuickDockDebugSummary();
   return {
     hasSession: Boolean(auth.session),
     userId: auth.session?.user.id,
@@ -2941,7 +4288,37 @@ async function getAuthDebugState(): Promise<Record<string, unknown>> {
     lastError: auth.lastError,
     pendingState: auth.pendingState,
     pendingStateExpiresAt: auth.pendingStateExpiresAt,
-    syncMeta: meta
+    syncMeta: meta,
+    quickDock
+  };
+}
+
+async function getQuickDockDebugSummary(): Promise<Record<string, unknown>> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const prefs = Array.from(storage.prefsById.values());
+  const pinnedCount = prefs.filter((entry) => entry.pinned).length;
+  const dismissedCount = prefs.filter((entry) => {
+    const ms = entry.dismissedUntil ? Date.parse(entry.dismissedUntil) : Number.NaN;
+    return Number.isFinite(ms) && ms > Date.now();
+  }).length;
+
+  const topClicked = prefs
+    .map((entry) => ({
+      id: entry.bookmarkId,
+      opens: getDockRecentClickCount(entry)
+    }))
+    .sort((left, right) => right.opens - left.opens)
+    .slice(0, 5);
+
+  return {
+    enabled: settings.quickDockEnabled,
+    profileCount: storage.profiles.length,
+    activeProfileId: storage.layout.activeProfileId,
+    pinnedCount,
+    dismissedCount,
+    mode: storage.layout.mode,
+    topClicked
   };
 }
 
@@ -3699,9 +5076,18 @@ function buildCloudSettingsPayload(settings: ExtensionSettings): Partial<Extensi
     embeddingMaxChars: settings.embeddingMaxChars,
     temperature: settings.temperature,
     maxChars: settings.maxChars,
+    quickDockEnabled: settings.quickDockEnabled,
+    quickDockCollapsedByDefault: settings.quickDockCollapsedByDefault,
+    quickDockMaxItems: settings.quickDockMaxItems,
+    quickDockPinMode: settings.quickDockPinMode,
+    classificationMode: settings.classificationMode,
     preferReuseCategories: settings.preferReuseCategories,
     semanticSearchEnabled: settings.semanticSearchEnabled,
     searchFallbackMode: settings.searchFallbackMode,
+    webAugmentEnabled: settings.webAugmentEnabled,
+    clarifyOnLowConfidence: settings.clarifyOnLowConfidence,
+    lowConfidenceThreshold: settings.lowConfidenceThreshold,
+    maxWebAugmentPerQuery: settings.maxWebAugmentPerQuery,
     excludedUrlPatterns: settings.excludedUrlPatterns,
     rankingWeights: settings.rankingWeights,
     trashRetentionDays: settings.trashRetentionDays
@@ -3983,7 +5369,7 @@ function mapSupabaseUser(
 ): AuthSessionUser {
   return {
     id: user.id,
-    email: user.email || "unknown@autonote.local",
+    email: user.email || "unknown@musemark.local",
     displayName:
       stringOrUndefined(user.user_metadata?.full_name) ||
       stringOrUndefined(user.user_metadata?.name) ||
@@ -4080,7 +5466,7 @@ function createSupabaseAuthClient(settings: ExtensionSettings, storage: Supporte
       detectSessionInUrl: false,
       persistSession: false,
       storage,
-      storageKey: `autonote-auth-${chrome.runtime.id}`
+      storageKey: `${LEGACY_PREFIX}-auth-${chrome.runtime.id}`
     }
   });
 }
@@ -4248,7 +5634,7 @@ async function runMigrationSelfCheck(): Promise<void> {
   }
 
   if (repairedCount > 0) {
-    console.info(`AutoNote migration self-check repaired ${repairedCount} sampled records.`);
+    console.info(`MuseMark migration self-check repaired ${repairedCount} sampled records.`);
   }
 }
 
@@ -4311,8 +5697,185 @@ async function queryByScope(scope: ManagerScope, status?: BookmarkStatus | "all"
   return byStatus.flat();
 }
 
+function detectSearchIntent(query: string, clarificationAnswer: string): SearchTrace["intentType"] {
+  if (!query.trim()) {
+    return "empty";
+  }
+  if (clarificationAnswer.trim()) {
+    return "explicit";
+  }
+  return detectAmbiguousIntent(query) ? "ambiguous" : "explicit";
+}
+
+function detectAmbiguousIntent(query: string): boolean {
+  const normalized = normalizeLookup(query);
+  if (!normalized) {
+    return false;
+  }
+
+  const temporalHints = ["最近", "最新", "很火", "爆火", "热门", "today", "recent", "latest", "hot", "trending"];
+  if (temporalHints.some((token) => normalized.includes(token))) {
+    return true;
+  }
+
+  const pronounHints = ["那个", "这个", "那个网站", "that one", "this one"];
+  if (pronounHints.some((token) => normalized.includes(token))) {
+    return true;
+  }
+
+  const genericEntityHints = ["智能体", "agent", "ai", "模型", "大模型", "工具", "教程", "article", "news"];
+  const tokens = tokenize(normalized);
+  const hasSpecificToken = tokens.some((token) => /[a-z0-9]{4,}/i.test(token) && !genericEntityHints.includes(token));
+  const hasGenericHint = genericEntityHints.some((token) => normalized.includes(token));
+
+  if (hasGenericHint && !hasSpecificToken && tokens.length <= 4) {
+    return true;
+  }
+
+  return false;
+}
+
+function computeSearchConfidence(rows: SearchRankRow[]): number {
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  const top = rows[0];
+  const second = rows[1];
+  const topFinal = clamp01(top.finalScore);
+  const gapRatio = second ? clamp01((top.finalScore - second.finalScore) / Math.max(0.01, top.finalScore)) : 1;
+  const strongestSignal = Math.max(
+    top.exactMatchTier >= 2 ? 1 : 0,
+    clamp01(top.lexicalScore),
+    clamp01(top.semanticScore),
+    clamp01(top.taxonomyScore)
+  );
+  const signalAgreement = clamp01(
+    ((top.lexicalScore >= 0.25 ? 1 : 0) + (top.semanticScore >= 0.25 ? 1 : 0) + (top.taxonomyScore >= 0.25 ? 1 : 0)) / 3
+  );
+
+  let confidence = topFinal * 0.42 + gapRatio * 0.28 + strongestSignal * 0.2 + signalAgreement * 0.1;
+
+  if (top.exactMatchTier >= 2) {
+    confidence += 0.12;
+  }
+  if (top.semanticScore < 0.15 && top.lexicalScore < 0.15) {
+    confidence -= 0.1;
+  }
+
+  return clamp01(confidence);
+}
+
+function buildClarifyOptions(rows: SearchRankRow[]): string[] {
+  const options: string[] = [];
+
+  for (const row of rows.slice(0, 5)) {
+    const item = row.item;
+    const shortTitle = (item.title || "").trim().slice(0, 36);
+    if (shortTitle) {
+      options.push(shortTitle);
+    }
+    if (item.category) {
+      options.push(item.category);
+    }
+    if (item.domain) {
+      options.push(item.domain);
+    }
+    if (item.tags?.[0]) {
+      options.push(item.tags[0]);
+    }
+  }
+
+  return Array.from(new Set(options.map((entry) => entry.trim()).filter(Boolean))).slice(0, 4);
+}
+
+function createClarifySession(input: { query: string; scope: ManagerScope; options: string[] }): string {
+  const id = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`).slice(0, 64);
+  const session: ClarifySession = {
+    id,
+    query: input.query,
+    scope: input.scope,
+    options: input.options,
+    createdAt: Date.now()
+  };
+  clarifySessions.set(id, session);
+  pruneClarifySessions();
+  return id;
+}
+
+function getClarifySession(sessionId: string): ClarifySession | undefined {
+  pruneClarifySessions();
+  const session = clarifySessions.get(sessionId);
+  if (!session) {
+    return undefined;
+  }
+  if (Date.now() - session.createdAt > SEARCH_CLARIFY_SESSION_TTL_MS) {
+    clarifySessions.delete(sessionId);
+    return undefined;
+  }
+  return session;
+}
+
+function pruneClarifySessions(): void {
+  const now = Date.now();
+  for (const [id, session] of clarifySessions.entries()) {
+    if (now - session.createdAt > SEARCH_CLARIFY_SESSION_TTL_MS) {
+      clarifySessions.delete(id);
+    }
+  }
+}
+
+async function augmentIntentWithWeb(settings: ExtensionSettings, query: string, maxCalls: number): Promise<WebAugmentResult> {
+  if (!settings.apiKey?.trim()) {
+    return {
+      terms: [],
+      reason: "未配置 API key，跳过联网补充",
+      used: false,
+      degraded: true
+    };
+  }
+
+  if (maxCalls <= 0) {
+    return {
+      terms: [],
+      reason: "maxWebAugmentPerQuery=0，跳过联网补充",
+      used: false,
+      degraded: true
+    };
+  }
+
+  try {
+    const raw = await withTimeout(callWebSearchRaw(settings, query), WEB_AUGMENT_TIMEOUT_MS, "Web augment timed out");
+    const parsed = extractJson(raw) as Partial<{ aliases: string[]; keywords: string[]; reason: string }>;
+    const aliases = Array.isArray(parsed.aliases) ? parsed.aliases.map(String) : [];
+    const keywords = Array.isArray(parsed.keywords) ? parsed.keywords.map(String) : [];
+    const mergedTerms = normalizeTags([...aliases, ...keywords]).slice(0, 12);
+    return {
+      terms: mergedTerms,
+      reason: (parsed.reason ?? "").toString().trim() || "联网补充完成",
+      used: mergedTerms.length > 0,
+      degraded: false
+    };
+  } catch (error) {
+    return {
+      terms: [],
+      reason: toErrorMessage(error),
+      used: false,
+      degraded: true
+    };
+  }
+}
+
 function buildWhyMatched(row: SearchRankRow): string {
   const reasons: string[] = [];
+
+  if (row.exactMatchTier >= 3) {
+    reasons.push("标题精准命中");
+  } else if (row.exactMatchTier === 2) {
+    reasons.push("URL 精准命中");
+  } else if (row.exactMatchTier === 1) {
+    reasons.push("标题短语命中");
+  }
 
   if (row.semanticScore >= 0.5) {
     reasons.push("语义相近");
@@ -4332,6 +5895,37 @@ function buildWhyMatched(row: SearchRankRow): string {
   }
 
   return reasons.join(" + ");
+}
+
+function computeExactMatchTier(item: BookmarkItem, normalizedQuery: string, queryLooksLikeUrl: boolean): number {
+  if (!normalizedQuery) {
+    return 0;
+  }
+
+  const title = normalizeLookup(item.title ?? "");
+  if (title && title === normalizedQuery) {
+    return 3;
+  }
+
+  const rawUrl = (item.url ?? "").trim().toLowerCase();
+  if (queryLooksLikeUrl && rawUrl) {
+    const normalizedItemUrl = normalizeUrl(item.canonicalUrl || item.url).toLowerCase();
+    const normalizedQueryUrl = normalizeUrl(normalizedQuery).toLowerCase();
+    if (
+      normalizedItemUrl === normalizedQueryUrl ||
+      normalizedItemUrl.startsWith(normalizedQueryUrl) ||
+      rawUrl === normalizedQuery ||
+      rawUrl.startsWith(normalizedQuery)
+    ) {
+      return 2;
+    }
+  }
+
+  if (title && title.includes(normalizedQuery)) {
+    return 1;
+  }
+
+  return 0;
 }
 
 function lexicalScore(item: BookmarkItem, query: string, tokenSet: Set<string>): number {
@@ -4474,7 +6068,7 @@ function cosineSimilarity(left: number[], right: number[]): number {
   return clamp01(dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm)));
 }
 
-function buildExpandedTokenSet(query: string): Set<string> {
+function buildExpandedTokenSet(query: string, useSynonyms = true): Set<string> {
   const tokens = tokenize(query);
   const expanded = new Set<string>(tokens);
 
@@ -4488,10 +6082,12 @@ function buildExpandedTokenSet(query: string): Set<string> {
     news: ["资讯", "快讯", "报道"]
   };
 
-  for (const token of tokens) {
-    const aliases = synonymMap[token] ?? [];
-    for (const alias of aliases) {
-      expanded.add(alias);
+  if (useSynonyms) {
+    for (const token of tokens) {
+      const aliases = synonymMap[token] ?? [];
+      for (const alias of aliases) {
+        expanded.add(alias);
+      }
     }
   }
 
@@ -4712,6 +6308,17 @@ function resolveEmbeddingsEndpoint(baseUrl: string): string {
   return `${cleaned}/v1/embeddings`;
 }
 
+function resolveResponsesEndpoint(baseUrl: string): string {
+  const cleaned = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  if (cleaned.endsWith("/responses")) {
+    return cleaned;
+  }
+  if (cleaned.endsWith("/v1")) {
+    return `${cleaned}/responses`;
+  }
+  return `${cleaned}/v1/responses`;
+}
+
 function deriveFaviconFallback(pageUrl?: string, domain?: string): string | undefined {
   const parsed = tryParseUrl(pageUrl);
   if (parsed) {
@@ -4783,7 +6390,7 @@ async function notifyUser(message: string): Promise<void> {
     await chrome.notifications.create({
       type: "basic",
       iconUrl: "icon-128.png",
-      title: "AutoNote",
+      title: "MuseMark",
       message
     });
   } catch {

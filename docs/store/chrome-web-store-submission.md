@@ -1,22 +1,22 @@
-# AutoNote Chrome Web Store Submission Pack
+# MuseMark Chrome Web Store Submission Pack
 
 ## 1) Upload package (prepared)
-- ZIP: `releases/autonote-store-v0.1.1-permission-tightened.zip`
+- ZIP: `releases/musemark-store-v0.1.1-permission-tightened.zip`
 - SHA256: `0cf1cfefad9cd865706b8b544992c9560cd46daf50b7b56efabd057a22750ced`
 
 ## 2) Listing copy (ready to use)
 
 ### Name
-AutoNote: AI Smart Bookmark Organizer
+MuseMark: AI Smart Bookmark Organizer
 
 ### Short description
 One-key save, AI classify, semantic search, and cloud sync for your heavy bookmark workflow.
 
 ### Detailed description
-AutoNote helps you capture and organize massive links with minimal friction.
+MuseMark helps you capture and organize massive links with minimal friction.
 
 Key features:
-- One-key save current page into AutoNote inbox
+- One-key save current page into MuseMark inbox
 - AI-assisted summary and classification (1 category + tags)
 - Semantic search to recall links even when keywords are forgotten
 - Board + compact home views for fast navigation
@@ -67,7 +67,7 @@ Used only for core bookmark and sync functionality.
 
 ### Privacy policy URL
 Use your deployed policy page URL (must be public), for example:
-- `https://auto-note.vercel.app/privacy.html`
+- `https://bridge.musemark.app/privacy.html`
 
 ## 5) Reviewer test instructions (paste into dashboard)
 1. Install extension and open any HTTPS page.

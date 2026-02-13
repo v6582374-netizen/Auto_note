@@ -1,6 +1,6 @@
-# AutoNote Auth Bridge
+# MuseMark Auth Bridge
 
-Deploy this folder to your HTTPS domain (example: `https://bridge.autonote.app`).
+Deploy this folder to your HTTPS domain (example: `https://bridge.musemark.app`).
 
 Required routes:
 - `/` -> index page
