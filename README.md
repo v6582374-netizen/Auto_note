@@ -59,7 +59,7 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 | AI 摘要与分类 | 完成 | 双阶段流程（analyze + classify），失败可回退/重试 |
 | 语义检索 | 完成 | lexical + semantic + taxonomy + recency 混合排序 |
 | 低置信度澄清 | 完成 | 模糊查询可触发澄清选项，二次排序 |
-| QuickDock | 完成 | 网页侧常驻入口，右侧竖向 Top10，支持 pin/dismiss/layout 与数字快捷键 |
+| QuickDock | 完成 | 网页侧常驻入口，右侧竖向 Top10，支持 pin/dismiss/layout 与数字快捷键；已完成关闭控件中轴对齐与瀑布流展开/收起动画 |
 | 回收站生命周期 | 完成 | Trash / Restore / Permanent Delete / Retention 清理 |
 | 导入导出 | 完成 | Manager 端 JSON 导入导出 |
 | 分类规则工作台 | 完成 | Canonical + aliases 管理 |
@@ -108,6 +108,9 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 - 支持在 `Options` 中分区管理：
   - `Pinned to Dock`（手动 Pin 区）
   - `Suggested for Dock`（算法推荐区，支持 Pin/Unpin）
+- 关闭控件已升级为深灰未来风格，并与书签列保持同一中轴对齐
+- 展开/收起采用自上而下瀑布流过渡（约 300ms 节奏），避免瞬时跳变
+- Dock 非图标区域保持透明策略，仅图标本体保持不透明
 
 ### 5) 可选云同步与账号体系
 

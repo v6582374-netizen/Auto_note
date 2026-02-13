@@ -81,7 +81,11 @@
   let dockFocusedIndex = 0;
   let dockSuppressedByOverlay = false;
   let dockRefreshTimer: number | undefined;
+  let dockTransitionTimer: number | undefined;
+  let dockTransitionLocked = false;
   let dockContextMenu: HTMLDivElement | null = null;
+
+  const DOCK_WATERFALL_STEP_MS = 32;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.protocolVersion !== PROTOCOL_VERSION) {
@@ -572,8 +576,10 @@
     const root = document.createElement("div");
     root.id = "musemark-quickdock";
     root.innerHTML = `
-      <button class="anqd-restore" type="button" title="Show Dock (Cmd/Ctrl+Shift+K)">◀</button>
-      <button class="anqd-hide" type="button" title="Hide Dock">×</button>
+      <div class="anqd-controls">
+        <button class="anqd-restore" type="button" title="Show Dock (Cmd/Ctrl+Shift+K)" aria-label="Show Dock"></button>
+        <button class="anqd-hide" type="button" title="Hide Dock" aria-label="Hide Dock"></button>
+      </div>
       <div class="anqd-rail">
         <div class="anqd-list" role="list"></div>
       </div>
@@ -612,71 +618,125 @@
     style.textContent = `
       #musemark-quickdock {
         position: fixed;
-        right: 18px;
+        right: 0;
         top: 50%;
         transform: translateY(-50%);
         z-index: 2147483645;
         font-family: "Avenir Next", "SF Pro Text", "Noto Sans SC", sans-serif;
+        opacity: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+        width: 46px;
+      }
+      #musemark-quickdock .anqd-controls {
+        width: 46px;
+        min-height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       #musemark-quickdock .anqd-restore {
-        position: absolute;
-        top: 50%;
-        right: -40px;
-        transform: translateY(-50%);
-        width: 64px;
-        height: 216px;
+        position: relative;
+        width: 36px;
+        height: 22px;
         border: none;
         outline: none;
-        border-radius: 48px;
-        background: rgba(255, 255, 255, 0.05);
-        color: rgba(244, 246, 255, 0.86);
+        border-radius: 9px;
+        background: transparent;
+        color: transparent;
         display: none;
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        backdrop-filter: blur(20px) saturate(180%);
-        -webkit-backdrop-filter: blur(20px) saturate(180%);
-        box-shadow:
-          0 12px 54px rgba(255, 255, 255, 0.1),
-          inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        transition: transform 180ms ease, filter 180ms ease;
+        box-shadow: none;
       }
       #musemark-quickdock .anqd-hide {
-        position: absolute;
-        top: -70px;
-        right: 6px;
-        width: 48px;
-        height: 48px;
+        position: relative;
+        width: 36px;
+        height: 22px;
         border: none;
         outline: none;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.05);
-        color: rgba(244, 246, 255, 0.82);
+        border-radius: 9px;
+        background: transparent;
+        color: transparent;
         cursor: pointer;
-        font-size: 32px;
-        line-height: 1;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        z-index: 3;
-        backdrop-filter: blur(20px) saturate(180%);
-        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        z-index: 2;
+        transition: transform 180ms ease, filter 180ms ease;
+        box-shadow: none;
+      }
+      #musemark-quickdock .anqd-hide::before,
+      #musemark-quickdock .anqd-restore::before {
+        content: "";
+        position: absolute;
+        left: 7px;
+        right: 7px;
+        top: 50%;
+        height: 1.5px;
+        transform: translateY(-50%);
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(118, 118, 118, 0.92) 18%,
+          rgba(156, 156, 156, 0.98) 50%,
+          rgba(118, 118, 118, 0.92) 82%,
+          transparent 100%
+        );
         box-shadow:
-          0 10px 30px rgba(255, 255, 255, 0.08),
-          inset 0 1px 0 rgba(255, 255, 255, 0.16);
+          0 0 8px rgba(84, 84, 84, 0.46),
+          0 0 14px rgba(60, 60, 60, 0.28);
+        transition: transform 180ms ease, opacity 180ms ease;
+      }
+      #musemark-quickdock .anqd-hide::after,
+      #musemark-quickdock .anqd-restore::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        width: 7px;
+        height: 7px;
+        border-right: 1.5px solid rgba(124, 124, 124, 0.96);
+        border-bottom: 1.5px solid rgba(124, 124, 124, 0.96);
+        transform-origin: center;
+        filter: drop-shadow(0 0 5px rgba(72, 72, 72, 0.38));
+      }
+      #musemark-quickdock .anqd-hide::after {
+        top: 1px;
+        transform: translateX(-50%) rotate(45deg);
+      }
+      #musemark-quickdock .anqd-restore::after {
+        top: 6px;
+        transform: translateX(-50%) rotate(-135deg);
+      }
+      #musemark-quickdock .anqd-hide:hover::before,
+      #musemark-quickdock .anqd-restore:hover::before {
+        transform: translateY(-50%) scaleX(0.74);
+        opacity: 0.95;
+      }
+      #musemark-quickdock .anqd-hide:hover,
+      #musemark-quickdock .anqd-restore:hover {
+        transform: translateY(-1px);
+        filter: drop-shadow(0 0 10px rgba(92, 92, 92, 0.38));
+      }
+      #musemark-quickdock.is-transitioning .anqd-hide,
+      #musemark-quickdock.is-transitioning .anqd-restore {
+        pointer-events: none;
       }
       #musemark-quickdock .anqd-rail {
         position: relative;
-        width: 60px;
+        width: 46px;
         border: none;
         outline: none;
-        border-radius: 12px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
-        box-shadow:
-          0 24px 80px rgba(255, 255, 255, 0.12),
-          inset 0 1px 0 rgba(255, 255, 255, 0.22);
-        backdrop-filter: blur(20px) saturate(180%);
-        -webkit-backdrop-filter: blur(20px) saturate(180%);
-        padding: 8px;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        padding: 0;
         display: flex;
         align-items: stretch;
         justify-content: center;
@@ -699,11 +759,11 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 12px;
+        gap: 6px;
         max-height: min(72vh, 760px);
         overflow-y: auto;
         width: 100%;
-        padding: 4px 0;
+        padding: 0;
       }
       #musemark-quickdock .anqd-list::-webkit-scrollbar {
         width: 0;
@@ -711,11 +771,11 @@
       }
       #musemark-quickdock .anqd-item {
         position: relative;
-        width: 40px;
-        height: 40px;
+        width: 30px;
+        height: 30px;
         border: none;
         outline: none;
-        border-radius: 12px;
+        border-radius: 10px;
         background: transparent;
         box-shadow: none;
         cursor: pointer;
@@ -724,7 +784,21 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        transition: none;
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        transition:
+          opacity 72ms ease-in-out,
+          transform 72ms ease-in-out,
+          box-shadow 140ms ease;
+        transition-delay:
+          calc(var(--idx, 0) * 32ms),
+          calc(var(--idx, 0) * 32ms),
+          0ms;
+      }
+      #musemark-quickdock.is-opening .anqd-item,
+      #musemark-quickdock.is-closing .anqd-item {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.96);
       }
       #musemark-quickdock .anqd-item.selected {
         box-shadow: 0 0 22px rgba(255, 255, 255, 0.2);
@@ -734,6 +808,7 @@
         height: 100%;
         object-fit: cover;
         border-radius: inherit;
+        opacity: 1;
       }
       #musemark-quickdock .anqd-fallback {
         width: 100%;
@@ -745,6 +820,7 @@
         font-size: 24px;
         font-weight: 700;
         color: rgba(249, 251, 255, 0.9);
+        opacity: 1;
       }
       #musemark-quickdock .anqd-slot {
         position: absolute;
@@ -755,7 +831,7 @@
         padding: 0 4px;
         border-radius: 999px;
         border: none;
-        background: rgba(18, 22, 30, 0.5);
+        background: transparent;
         color: rgba(248, 250, 255, 0.92);
         font-size: 20px;
         line-height: 24px;
@@ -774,16 +850,18 @@
         width: 8px;
         height: 8px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.72);
-        box-shadow: none;
+        background: transparent;
+        box-shadow:
+          inset 0 0 0 1.2px rgba(255, 255, 255, 0.95),
+          0 0 8px rgba(189, 231, 255, 0.36);
       }
       #musemark-quickdock .anqd-empty {
-        width: 40px;
+        width: 30px;
         min-height: 80px;
-        border-radius: 12px;
+        border-radius: 10px;
         border: none;
-        background: rgba(255, 255, 255, 0.05);
-        color: rgba(247, 249, 255, 0.86);
+        background: transparent;
+        color: rgba(247, 249, 255, 0.8);
         font-size: 20px;
         line-height: 1.1;
         display: flex;
@@ -819,17 +897,28 @@
       }
       @media (max-width: 960px) {
         #musemark-quickdock {
-          right: 12px;
+          right: 0;
+        }
+        #musemark-quickdock .anqd-hide,
+        #musemark-quickdock .anqd-restore {
+          width: 34px;
+          height: 20px;
+          border-radius: 8px;
+        }
+        #musemark-quickdock .anqd-hide::before,
+        #musemark-quickdock .anqd-restore::before {
+          left: 6px;
+          right: 6px;
         }
         #musemark-quickdock .anqd-rail {
-          width: 52px;
-          border-radius: 10px;
-          padding: 8px;
+          width: 42px;
+          border-radius: 0;
+          padding: 0;
         }
         #musemark-quickdock .anqd-item {
-          width: 36px;
-          height: 36px;
-          border-radius: 12px;
+          width: 27px;
+          height: 27px;
+          border-radius: 9px;
         }
       }
     `;
@@ -844,7 +933,11 @@
       return;
     }
 
-    dockElements.root.classList.toggle("is-collapsed", dockMode === "collapsed");
+    const isTransitioning =
+      dockElements.root.classList.contains("is-opening") || dockElements.root.classList.contains("is-closing");
+    if (!isTransitioning) {
+      dockElements.root.classList.toggle("is-collapsed", dockMode === "collapsed");
+    }
     renderDockEntries();
   }
 
@@ -869,6 +962,7 @@
       const row = document.createElement("button");
       row.type = "button";
       row.className = "anqd-item";
+      row.style.setProperty("--idx", String(index));
       if (index === dockFocusedIndex) {
         row.classList.add("selected");
       }
@@ -917,9 +1011,63 @@
   }
 
   async function setDockMode(mode: DockMode, persist: boolean): Promise<void> {
-    dockMode = mode;
     hideDockContextMenu();
-    renderDock();
+
+    if (dockTransitionLocked) {
+      return;
+    }
+
+    const dock = ensureDock();
+    const root = dock.root;
+    const prevMode = dockMode;
+    const visibleCount = Math.max(1, Math.min(dockEntries.length, 10));
+    const transitionDuration = Math.min(360, Math.max(220, (visibleCount - 1) * DOCK_WATERFALL_STEP_MS + 72));
+
+    if (dockTransitionTimer !== undefined) {
+      window.clearTimeout(dockTransitionTimer);
+      dockTransitionTimer = undefined;
+    }
+
+    if (prevMode === "collapsed" && mode === "expanded") {
+      dockTransitionLocked = true;
+      dockMode = "expanded";
+      root.classList.remove("is-collapsed", "is-closing");
+      root.classList.add("is-transitioning", "is-opening");
+      renderDock();
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          root.classList.remove("is-opening");
+          dockTransitionTimer = window.setTimeout(() => {
+            root.classList.remove("is-transitioning");
+            dockTransitionLocked = false;
+            dockTransitionTimer = undefined;
+          }, transitionDuration);
+        });
+      });
+    } else if (prevMode === "expanded" && mode === "collapsed") {
+      dockTransitionLocked = true;
+      dockMode = "expanded";
+      root.classList.remove("is-opening", "is-collapsed", "is-closing");
+      root.classList.add("is-transitioning");
+      renderDock();
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          root.classList.add("is-closing");
+          dockTransitionTimer = window.setTimeout(() => {
+            dockMode = "collapsed";
+            root.classList.remove("is-closing", "is-transitioning");
+            renderDock();
+            dockTransitionLocked = false;
+            dockTransitionTimer = undefined;
+          }, transitionDuration);
+        });
+      });
+    } else {
+      dockMode = mode;
+      root.classList.remove("is-opening", "is-closing", "is-transitioning");
+      renderDock();
+    }
+
     if (persist) {
       try {
         await sendRuntimeMessage<{ layout?: DockLayoutState }>("quickDock/updateLayout", {
