@@ -22,7 +22,7 @@
     saveHint: HTMLDivElement;
   };
 
-  type DockMode = "collapsed" | "peek" | "expanded";
+  type DockMode = "collapsed" | "expanded";
 
   type DockLayoutState = {
     mode: DockMode;
@@ -58,16 +58,10 @@
 
   type DockElements = {
     root: HTMLDivElement;
-    toggle: HTMLButtonElement;
-    peek: HTMLDivElement;
-    panel: HTMLDivElement;
+    rail: HTMLDivElement;
     list: HTMLDivElement;
-    pinButton: HTMLButtonElement;
-    collapseButton: HTMLButtonElement;
-    libraryButton: HTMLButtonElement;
-    saveButton: HTMLButtonElement;
-    moreButton: HTMLButtonElement;
-    profileLabel: HTMLSpanElement;
+    hideButton: HTMLButtonElement;
+    restoreButton: HTMLButtonElement;
   };
 
   let overlayElements: OverlayElements | null = null;
@@ -79,8 +73,7 @@
 
   let dockElements: DockElements | null = null;
   let dockEnabled = true;
-  let dockMode: DockMode = "collapsed";
-  let dockPinnedWindow = false;
+  let dockMode: DockMode = "expanded";
   let dockEntries: DockEntry[] = [];
   let dockPinnedIds = new Set<string>();
   let dockProfiles: DockProfile[] = [];
@@ -171,6 +164,10 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideDockContextMenu();
+    }
+
     if (event.key === "Escape" && overlayElements?.root.style.display !== "none") {
       hideOverlay();
       return;
@@ -182,36 +179,28 @@
       return;
     }
 
-    if (dockMode === "expanded") {
-      const isTyping = isTypingTarget(event.target);
-      if (event.key === "Escape") {
-        event.preventDefault();
-        void setDockMode("collapsed", true);
-        return;
-      }
-      if (isTyping) {
-        return;
-      }
-
-      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-        event.preventDefault();
-        dockFocusedIndex = Math.min(dockEntries.length - 1, dockFocusedIndex + 1);
-        renderDockEntries();
-        return;
-      }
-      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-        event.preventDefault();
-        dockFocusedIndex = Math.max(0, dockFocusedIndex - 1);
-        renderDockEntries();
-        return;
-      }
-      if (event.key === "Enter") {
-        if (dockEntries[dockFocusedIndex]) {
-          event.preventDefault();
-          void openDockEntry(dockEntries[dockFocusedIndex]);
-        }
-      }
+    if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+      return;
     }
+
+    if (isTypingTarget(event.target)) {
+      return;
+    }
+
+    const shortcutIndex = resolveDockShortcutIndex(event);
+    if (shortcutIndex === undefined) {
+      return;
+    }
+
+    const entry = dockEntries[shortcutIndex];
+    if (!entry) {
+      return;
+    }
+
+    event.preventDefault();
+    dockFocusedIndex = shortcutIndex;
+    renderDockEntries();
+    void openDockEntry(entry);
   });
 
   document.addEventListener("click", () => {
@@ -555,7 +544,6 @@
     dockPinnedIds = new Set(Array.isArray(payload.pinnedIds) ? payload.pinnedIds : []);
     dockProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
     dockActiveProfileId = payload.layout?.activeProfileId || "default";
-    dockPinnedWindow = Boolean(payload.layout?.pinned);
     dockMode = normalizeDockMode(payload.layout?.mode) || dockMode;
 
     if (!dockEnabled) {
@@ -584,245 +572,168 @@
     const root = document.createElement("div");
     root.id = "musemark-quickdock";
     root.innerHTML = `
-      <button class="anqd-toggle" type="button" title="Open QuickDock (Cmd/Ctrl+Shift+K)">Dock</button>
-      <div class="anqd-peek"></div>
-      <div class="anqd-panel">
-        <div class="anqd-head">
-          <div class="anqd-title-wrap">
-            <strong>QuickDock</strong>
-            <span class="anqd-profile">Default</span>
-          </div>
-          <div class="anqd-head-actions">
-            <button class="anqd-btn anqd-save" type="button">Save</button>
-            <button class="anqd-btn anqd-library" type="button">Library</button>
-            <button class="anqd-btn anqd-pin" type="button">Pin</button>
-            <button class="anqd-btn anqd-collapse" type="button">Collapse</button>
-            <button class="anqd-btn anqd-more" type="button">More</button>
-          </div>
-        </div>
-        <div class="anqd-list"></div>
+      <button class="anqd-restore" type="button" title="Show Dock (Cmd/Ctrl+Shift+K)">◀</button>
+      <button class="anqd-hide" type="button" title="Hide Dock">×</button>
+      <div class="anqd-rail">
+        <div class="anqd-list" role="list"></div>
       </div>
     `;
 
-    const toggle = root.querySelector(".anqd-toggle") as HTMLButtonElement;
-    const peek = root.querySelector(".anqd-peek") as HTMLDivElement;
-    const panel = root.querySelector(".anqd-panel") as HTMLDivElement;
+    const rail = root.querySelector(".anqd-rail") as HTMLDivElement;
     const list = root.querySelector(".anqd-list") as HTMLDivElement;
-    const saveButton = root.querySelector(".anqd-save") as HTMLButtonElement;
-    const libraryButton = root.querySelector(".anqd-library") as HTMLButtonElement;
-    const pinButton = root.querySelector(".anqd-pin") as HTMLButtonElement;
-    const collapseButton = root.querySelector(".anqd-collapse") as HTMLButtonElement;
-    const moreButton = root.querySelector(".anqd-more") as HTMLButtonElement;
-    const profileLabel = root.querySelector(".anqd-profile") as HTMLSpanElement;
+    const hideButton = root.querySelector(".anqd-hide") as HTMLButtonElement;
+    const restoreButton = root.querySelector(".anqd-restore") as HTMLButtonElement;
 
-    toggle.addEventListener("click", () => {
-      void setDockMode(dockMode === "collapsed" ? "expanded" : "collapsed", true);
-    });
-
-    toggle.addEventListener("mouseenter", () => {
-      if (!dockPinnedWindow && dockMode === "collapsed") {
-        void setDockMode("peek", false);
-      }
-    });
-
-    root.addEventListener("mouseleave", () => {
-      if (!dockPinnedWindow && dockMode === "peek") {
-        void setDockMode("collapsed", false);
-      }
-    });
-
-    saveButton.addEventListener("click", () => {
-      void triggerSaveCurrentPage();
-    });
-
-    libraryButton.addEventListener("click", () => {
-      void openLibraryFromDock();
-    });
-
-    pinButton.addEventListener("click", () => {
-      void toggleDockPinMode();
-    });
-
-    collapseButton.addEventListener("click", () => {
+    hideButton.addEventListener("click", () => {
       void setDockMode("collapsed", true);
     });
 
-    moreButton.addEventListener("click", () => {
-      void openLibraryFromDock();
+    restoreButton.addEventListener("click", () => {
+      void setDockMode("expanded", true);
     });
 
     document.documentElement.appendChild(root);
 
     dockElements = {
       root,
-      toggle,
-      peek,
-      panel,
+      rail,
       list,
-      pinButton,
-      collapseButton,
-      libraryButton,
-      saveButton,
-      moreButton,
-      profileLabel
+      hideButton,
+      restoreButton
     };
 
     return dockElements;
   }
 
   function ensureDockStyle(): void {
-    if (document.getElementById(QUICKDOCK_STYLE_ID)) {
-      return;
-    }
-
-    const style = document.createElement("style");
+    const existingStyle = document.getElementById(QUICKDOCK_STYLE_ID) as HTMLStyleElement | null;
+    const style = existingStyle ?? document.createElement("style");
     style.id = QUICKDOCK_STYLE_ID;
     style.textContent = `
       #musemark-quickdock {
         position: fixed;
         right: 18px;
-        bottom: 18px;
+        top: 50%;
+        transform: translateY(-50%);
         z-index: 2147483645;
-        font-family: "Avenir Next", "SF Pro Text", "Noto Sans", sans-serif;
-        color: #edf5ff;
+        font-family: "Avenir Next", "SF Pro Text", "Noto Sans SC", sans-serif;
       }
-      #musemark-quickdock .anqd-toggle {
-        border: 1px solid rgba(180, 202, 245, 0.35);
-        background: linear-gradient(145deg, #123056 0%, #173d6f 60%, #235184 100%);
-        color: #f4f9ff;
-        border-radius: 999px;
-        height: 40px;
-        min-width: 68px;
-        padding: 0 14px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.2px;
-        box-shadow: 0 14px 28px rgba(4, 15, 34, 0.36);
-      }
-      #musemark-quickdock .anqd-peek {
+      #musemark-quickdock .anqd-restore {
+        position: absolute;
+        top: 50%;
+        right: -40px;
+        transform: translateY(-50%);
+        width: 64px;
+        height: 216px;
+        border: none;
+        outline: none;
+        border-radius: 48px;
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(244, 246, 255, 0.86);
         display: none;
         align-items: center;
-        gap: 6px;
-        margin-top: 8px;
-        padding: 8px;
-        border-radius: 12px;
-        background: rgba(8, 23, 46, 0.9);
-        border: 1px solid rgba(180, 202, 245, 0.26);
-        box-shadow: 0 14px 30px rgba(4, 15, 34, 0.35);
+        justify-content: center;
+        cursor: pointer;
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        box-shadow:
+          0 12px 54px rgba(255, 255, 255, 0.1),
+          inset 0 1px 0 rgba(255, 255, 255, 0.2);
       }
-      #musemark-quickdock .anqd-peek-item {
-        width: 24px;
-        height: 24px;
+      #musemark-quickdock .anqd-hide {
+        position: absolute;
+        top: -70px;
+        right: 6px;
+        width: 48px;
+        height: 48px;
         border: none;
-        border-radius: 7px;
-        background: rgba(40, 80, 132, 0.85);
-        color: #e5efff;
+        outline: none;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(244, 246, 255, 0.82);
+        cursor: pointer;
+        font-size: 32px;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 3;
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        box-shadow:
+          0 10px 30px rgba(255, 255, 255, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      }
+      #musemark-quickdock .anqd-rail {
+        position: relative;
+        width: 60px;
+        border: none;
+        outline: none;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+        box-shadow:
+          0 24px 80px rgba(255, 255, 255, 0.12),
+          inset 0 1px 0 rgba(255, 255, 255, 0.22);
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        padding: 8px;
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        z-index: 1;
+        overflow: visible;
+        transition: opacity 140ms ease, transform 140ms ease;
+      }
+      #musemark-quickdock.is-collapsed .anqd-rail {
+        opacity: 0;
+        transform: translateX(16px) scale(0.96);
+        pointer-events: none;
+      }
+      #musemark-quickdock.is-collapsed .anqd-restore {
+        display: inline-flex;
+      }
+      #musemark-quickdock.is-collapsed .anqd-hide {
+        display: none;
+      }
+      #musemark-quickdock .anqd-list {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        max-height: min(72vh, 760px);
+        overflow-y: auto;
+        width: 100%;
+        padding: 4px 0;
+      }
+      #musemark-quickdock .anqd-list::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+      #musemark-quickdock .anqd-item {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        border: none;
+        outline: none;
+        border-radius: 12px;
+        background: transparent;
+        box-shadow: none;
         cursor: pointer;
         padding: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        font-size: 10px;
-      }
-      #musemark-quickdock .anqd-peek-item img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-      }
-      #musemark-quickdock .anqd-panel {
-        display: none;
-        margin-top: 8px;
-        width: min(360px, calc(100vw - 24px));
-        border-radius: 14px;
-        border: 1px solid rgba(180, 202, 245, 0.28);
-        background: linear-gradient(155deg, rgba(9, 27, 52, 0.97) 0%, rgba(10, 34, 66, 0.95) 54%, rgba(18, 53, 90, 0.95) 100%);
-        box-shadow: 0 20px 44px rgba(3, 12, 27, 0.48);
-        backdrop-filter: blur(6px);
-      }
-      #musemark-quickdock .anqd-head {
-        padding: 10px 11px;
-        border-bottom: 1px solid rgba(171, 197, 243, 0.18);
-      }
-      #musemark-quickdock .anqd-title-wrap {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 8px;
-      }
-      #musemark-quickdock .anqd-title-wrap strong {
-        font-size: 13px;
-        letter-spacing: 0.2px;
-      }
-      #musemark-quickdock .anqd-profile {
-        font-size: 11px;
-        color: #b7d0f8;
-      }
-      #musemark-quickdock .anqd-head-actions {
-        display: flex;
-        gap: 6px;
-        flex-wrap: wrap;
-      }
-      #musemark-quickdock .anqd-btn {
-        border: 1px solid rgba(163, 192, 244, 0.3);
-        background: rgba(20, 49, 83, 0.82);
-        color: #e4efff;
-        border-radius: 8px;
-        font-size: 11px;
-        line-height: 1;
-        padding: 7px 8px;
-        cursor: pointer;
-      }
-      #musemark-quickdock .anqd-btn:hover {
-        background: rgba(37, 77, 126, 0.92);
-      }
-      #musemark-quickdock .anqd-list {
-        max-height: min(48vh, 360px);
-        overflow: auto;
-        padding: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      #musemark-quickdock .anqd-item {
-        border: 1px solid transparent;
-        background: rgba(18, 44, 76, 0.8);
-        border-radius: 10px;
-        color: #ecf4ff;
-        padding: 7px;
-        display: grid;
-        grid-template-columns: 22px 1fr auto;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        text-align: left;
-      }
-      #musemark-quickdock .anqd-item:hover {
-        border-color: rgba(140, 178, 238, 0.55);
-        background: rgba(30, 69, 112, 0.9);
-      }
-      #musemark-quickdock .anqd-item:active {
-        transform: translateY(1px);
+        transition: none;
       }
       #musemark-quickdock .anqd-item.selected {
-        border-color: rgba(141, 198, 255, 0.9);
-        box-shadow: 0 0 0 1px rgba(141, 198, 255, 0.35) inset;
+        box-shadow: 0 0 22px rgba(255, 255, 255, 0.2);
       }
-      #musemark-quickdock .anqd-item.action {
-        grid-template-columns: 1fr auto;
-      }
-      #musemark-quickdock .anqd-favicon {
-        width: 22px;
-        height: 22px;
-        border-radius: 6px;
-        overflow: hidden;
-        background: rgba(28, 66, 105, 0.95);
-      }
-      #musemark-quickdock .anqd-favicon img {
+      #musemark-quickdock .anqd-item img {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        border-radius: inherit;
       }
       #musemark-quickdock .anqd-fallback {
         width: 100%;
@@ -830,51 +741,65 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-size: 10px;
+        border-radius: inherit;
+        font-size: 24px;
         font-weight: 700;
+        color: rgba(249, 251, 255, 0.9);
       }
-      #musemark-quickdock .anqd-item-main {
-        min-width: 0;
-      }
-      #musemark-quickdock .anqd-item-title {
-        font-size: 12px;
-        font-weight: 620;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #musemark-quickdock .anqd-item-sub {
-        font-size: 10px;
-        color: #b9cff0;
-        margin-top: 2px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #musemark-quickdock .anqd-badge {
-        font-size: 10px;
+      #musemark-quickdock .anqd-slot {
+        position: absolute;
+        right: -8px;
+        top: -8px;
+        min-width: 24px;
+        height: 24px;
+        padding: 0 4px;
         border-radius: 999px;
-        border: 1px solid rgba(147, 189, 246, 0.45);
-        background: rgba(27, 74, 125, 0.88);
-        color: #e8f4ff;
-        padding: 2px 7px;
+        border: none;
+        background: rgba(18, 22, 30, 0.5);
+        color: rgba(248, 250, 255, 0.92);
+        font-size: 20px;
+        line-height: 24px;
+        text-align: center;
+        opacity: 0;
+        transition: none;
+      }
+      #musemark-quickdock .anqd-item.selected .anqd-slot {
+        opacity: 1;
+      }
+      #musemark-quickdock .anqd-pinned {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: none;
       }
       #musemark-quickdock .anqd-empty {
-        border-radius: 10px;
-        border: 1px dashed rgba(170, 193, 237, 0.4);
-        color: #c4d8f5;
-        background: rgba(14, 36, 63, 0.72);
-        padding: 9px;
-        font-size: 11px;
+        width: 40px;
+        min-height: 80px;
+        border-radius: 12px;
+        border: none;
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(247, 249, 255, 0.86);
+        font-size: 20px;
+        line-height: 1.1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 12px;
       }
       #musemark-quickdock .anqd-menu {
         position: fixed;
         z-index: 2147483646;
         min-width: 190px;
         border-radius: 10px;
-        border: 1px solid rgba(170, 193, 237, 0.35);
-        background: rgba(10, 31, 57, 0.98);
-        box-shadow: 0 14px 28px rgba(5, 12, 26, 0.45);
+        border: 1px solid rgba(170, 177, 191, 0.78);
+        background: rgba(245, 247, 251, 0.98);
+        box-shadow: 0 16px 36px rgba(14, 19, 30, 0.24);
         padding: 6px;
         display: none;
       }
@@ -884,45 +809,34 @@
         border: none;
         border-radius: 7px;
         background: transparent;
-        color: #e9f2ff;
+        color: #2f3a4f;
         font-size: 12px;
         padding: 7px;
         cursor: pointer;
       }
       #musemark-quickdock .anqd-menu button:hover {
-        background: rgba(33, 73, 118, 0.9);
+        background: rgba(219, 225, 236, 0.88);
       }
-      #musemark-quickdock.mode-collapsed .anqd-panel,
-      #musemark-quickdock.mode-collapsed .anqd-peek {
-        display: none;
-      }
-      #musemark-quickdock.mode-peek .anqd-panel {
-        display: none;
-      }
-      #musemark-quickdock.mode-peek .anqd-peek {
-        display: flex;
-      }
-      #musemark-quickdock.mode-expanded .anqd-panel {
-        display: block;
-      }
-      #musemark-quickdock.mode-expanded .anqd-peek {
-        display: none;
-      }
-      #musemark-quickdock.window-pinned .anqd-toggle {
-        border-color: rgba(153, 205, 255, 0.8);
-      }
-      @media (max-width: 720px) {
+      @media (max-width: 960px) {
         #musemark-quickdock {
           right: 12px;
-          bottom: 12px;
         }
-        #musemark-quickdock .anqd-panel {
-          width: min(340px, calc(100vw - 16px));
+        #musemark-quickdock .anqd-rail {
+          width: 52px;
+          border-radius: 10px;
+          padding: 8px;
+        }
+        #musemark-quickdock .anqd-item {
+          width: 36px;
+          height: 36px;
+          border-radius: 12px;
         }
       }
     `;
 
-    document.documentElement.appendChild(style);
+    if (!existingStyle) {
+      document.documentElement.appendChild(style);
+    }
   }
 
   function renderDock(): void {
@@ -930,48 +844,8 @@
       return;
     }
 
-    const profileName = dockProfiles.find((entry) => entry.id === dockActiveProfileId)?.name || "Default";
-    dockElements.profileLabel.textContent = profileName;
-    dockElements.pinButton.textContent = dockPinnedWindow ? "Unpin" : "Pin";
-    dockElements.root.classList.toggle("window-pinned", dockPinnedWindow);
-    dockElements.root.classList.remove("mode-collapsed", "mode-peek", "mode-expanded");
-    dockElements.root.classList.add(`mode-${dockMode}`);
-    dockElements.toggle.textContent = dockMode === "expanded" ? "Hide" : "Dock";
-
-    renderDockPeek();
+    dockElements.root.classList.toggle("is-collapsed", dockMode === "collapsed");
     renderDockEntries();
-  }
-
-  function renderDockPeek(): void {
-    if (!dockElements) {
-      return;
-    }
-
-    dockElements.peek.innerHTML = "";
-    for (const entry of dockEntries.slice(0, 3)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "anqd-peek-item";
-      button.title = entry.title;
-
-      if (entry.kind === "bookmark") {
-        if (entry.favIconUrl) {
-          const img = document.createElement("img");
-          img.src = entry.favIconUrl;
-          img.alt = entry.domain || entry.title;
-          button.appendChild(img);
-        } else {
-          button.textContent = (entry.domain || entry.title || "?").slice(0, 1).toUpperCase();
-        }
-      } else {
-        button.textContent = entry.action === "open_library" ? "L" : "S";
-      }
-
-      button.addEventListener("click", () => {
-        void openDockEntry(entry);
-      });
-      dockElements.peek.appendChild(button);
-    }
   }
 
   function renderDockEntries(): void {
@@ -979,98 +853,72 @@
       return;
     }
 
-    dockElements.list.innerHTML = "";
+    const list = dockElements.list;
+    list.innerHTML = "";
+    const visibleEntries = dockEntries.slice(0, 10);
 
-    if (dockEntries.length === 0) {
+    if (visibleEntries.length === 0) {
       const empty = document.createElement("div");
       empty.className = "anqd-empty";
-      empty.textContent = "No bookmark available. Try Save Current Page or open Library.";
-      dockElements.list.appendChild(empty);
+      empty.textContent = "No bookmarks";
+      list.appendChild(empty);
       return;
     }
 
-    dockEntries.forEach((entry, index) => {
+    visibleEntries.forEach((entry, index) => {
       const row = document.createElement("button");
       row.type = "button";
-      row.className = `anqd-item ${entry.kind === "action" ? "action" : "bookmark"}`;
-      if (index === dockFocusedIndex && dockMode === "expanded") {
+      row.className = "anqd-item";
+      if (index === dockFocusedIndex) {
         row.classList.add("selected");
+      }
+      const shortcut = getDockShortcutLabel(index);
+      row.title = `${entry.title}\nShortcut: Ctrl+${shortcut}`;
+
+      if (entry.kind === "bookmark" && entry.favIconUrl) {
+        const img = document.createElement("img");
+        img.src = entry.favIconUrl;
+        img.alt = entry.domain || entry.title;
+        row.appendChild(img);
+      } else {
+        const fallback = document.createElement("div");
+        fallback.className = "anqd-fallback";
+        fallback.textContent = (entry.domain || entry.title || "?").slice(0, 1).toUpperCase();
+        row.appendChild(fallback);
+      }
+
+      const slot = document.createElement("span");
+      slot.className = "anqd-slot";
+      slot.textContent = shortcut;
+      row.appendChild(slot);
+
+      if (entry.kind === "bookmark" && (entry.pinned || dockPinnedIds.has(entry.id))) {
+        const pinned = document.createElement("span");
+        pinned.className = "anqd-pinned";
+        pinned.title = "Pinned";
+        row.appendChild(pinned);
       }
 
       if (entry.kind === "bookmark") {
-        const icon = document.createElement("div");
-        icon.className = "anqd-favicon";
-        if (entry.favIconUrl) {
-          const img = document.createElement("img");
-          img.src = entry.favIconUrl;
-          img.alt = entry.domain || entry.title;
-          icon.appendChild(img);
-        } else {
-          const fallback = document.createElement("div");
-          fallback.className = "anqd-fallback";
-          fallback.textContent = (entry.domain || entry.title || "?").slice(0, 1).toUpperCase();
-          icon.appendChild(fallback);
-        }
-
-        const main = document.createElement("div");
-        main.className = "anqd-item-main";
-
-        const title = document.createElement("div");
-        title.className = "anqd-item-title";
-        title.textContent = entry.title;
-        main.appendChild(title);
-
-        const subtitle = document.createElement("div");
-        subtitle.className = "anqd-item-sub";
-        subtitle.textContent = entry.subtitle || entry.domain || entry.url || "";
-        main.appendChild(subtitle);
-
-        const badge = document.createElement("span");
-        badge.className = "anqd-badge";
-        badge.textContent = entry.pinned || dockPinnedIds.has(entry.id) ? "Pinned" : "Open";
-
-        row.appendChild(icon);
-        row.appendChild(main);
-        row.appendChild(badge);
-
         row.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           showDockContextMenu(entry, event.clientX, event.clientY);
         });
-      } else {
-        const main = document.createElement("div");
-        main.className = "anqd-item-main";
-        const title = document.createElement("div");
-        title.className = "anqd-item-title";
-        title.textContent = entry.title;
-        main.appendChild(title);
-
-        if (entry.subtitle) {
-          const subtitle = document.createElement("div");
-          subtitle.className = "anqd-item-sub";
-          subtitle.textContent = entry.subtitle;
-          main.appendChild(subtitle);
-        }
-
-        const badge = document.createElement("span");
-        badge.className = "anqd-badge";
-        badge.textContent = "Action";
-
-        row.appendChild(main);
-        row.appendChild(badge);
       }
 
       row.addEventListener("click", () => {
         dockFocusedIndex = index;
+        renderDockEntries();
         void openDockEntry(entry);
       });
 
-      dockElements?.list.appendChild(row);
+      list.appendChild(row);
     });
   }
 
   async function setDockMode(mode: DockMode, persist: boolean): Promise<void> {
     dockMode = mode;
+    hideDockContextMenu();
     renderDock();
     if (persist) {
       try {
@@ -1087,25 +935,7 @@
     if (!dockEnabled) {
       return;
     }
-    if (dockMode === "expanded") {
-      await setDockMode("collapsed", true);
-      return;
-    }
-    await setDockMode("expanded", true);
-    dockFocusedIndex = 0;
-    renderDockEntries();
-  }
-
-  async function toggleDockPinMode(): Promise<void> {
-    dockPinnedWindow = !dockPinnedWindow;
-    renderDock();
-    try {
-      await sendRuntimeMessage<{ layout?: DockLayoutState }>("quickDock/updateLayout", {
-        pinned: dockPinnedWindow
-      });
-    } catch {
-      return;
-    }
+    await setDockMode(dockMode === "collapsed" ? "expanded" : "collapsed", true);
   }
 
   async function openDockEntry(entry: DockEntry): Promise<void> {
@@ -1145,6 +975,25 @@
     } catch {
       return;
     }
+  }
+
+  function getDockShortcutLabel(index: number): string {
+    if (index === 9) {
+      return "0";
+    }
+    return String(index + 1);
+  }
+
+  function resolveDockShortcutIndex(event: KeyboardEvent): number | undefined {
+    const code = event.code;
+    if (code === "Digit0" || code === "Numpad0") {
+      return 9;
+    }
+    const matched = code.match(/^(Digit|Numpad)([1-9])$/);
+    if (matched?.[2]) {
+      return Number(matched[2]) - 1;
+    }
+    return undefined;
   }
 
   function showDockContextMenu(entry: DockEntry, x: number, y: number): void {
@@ -1198,8 +1047,17 @@
       hideDockContextMenu();
     });
 
+    const saveCurrentButton = document.createElement("button");
+    saveCurrentButton.type = "button";
+    saveCurrentButton.textContent = "Save Current Page";
+    saveCurrentButton.addEventListener("click", () => {
+      void triggerSaveCurrentPage();
+      hideDockContextMenu();
+    });
+
     menu.appendChild(pinButton);
     menu.appendChild(dismissButton);
+    menu.appendChild(saveCurrentButton);
     menu.appendChild(openLibraryButton);
 
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 210))}px`;
@@ -1253,8 +1111,11 @@
   }
 
   function normalizeDockMode(mode: unknown): DockMode | undefined {
-    if (mode === "collapsed" || mode === "peek" || mode === "expanded") {
-      return mode;
+    if (mode === "collapsed") {
+      return "collapsed";
+    }
+    if (mode === "expanded" || mode === "peek") {
+      return "expanded";
     }
     return undefined;
   }

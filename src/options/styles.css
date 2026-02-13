@@ -103,6 +103,139 @@ body {
   gap: 8px;
 }
 
+.dock-control {
+  margin: 0 16px 16px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(150deg, #f9fbff, #f1f6ff);
+  display: grid;
+  gap: 12px;
+}
+
+.dock-control-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dock-control-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.dock-control-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dock-control-error {
+  border-radius: 10px;
+  border: 1px solid #efc9d3;
+  background: #fff0f4;
+  color: #7a273f;
+  font-size: 12px;
+  padding: 9px 10px;
+}
+
+.dock-section {
+  display: grid;
+  gap: 8px;
+}
+
+.dock-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.dock-section-head span {
+  color: var(--muted);
+}
+
+.dock-divider {
+  height: 1px;
+  background: var(--line);
+}
+
+.dock-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dock-row {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dock-row-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dock-favicon {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  object-fit: cover;
+  flex: 0 0 18px;
+}
+
+.dock-favicon.dock-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #d9e8ff;
+  color: #23436d;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.dock-row-copy {
+  min-width: 0;
+  display: grid;
+}
+
+.dock-row-copy strong {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-row-copy small {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dock-empty {
+  border-radius: 10px;
+  border: 1px dashed var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px;
+}
+
 .footer {
   padding: 0 16px 16px;
   display: flex;
@@ -140,5 +273,15 @@ body {
 
   .weights-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .dock-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dock-row-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }

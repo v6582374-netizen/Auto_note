@@ -5,7 +5,6 @@ import type { AuthState, BookmarkItem, BookmarkStatus, CategoryRule, SearchTrace
 import "./styles.css";
 
 type ScopeType = "inbox" | "library" | "trash";
-type ViewMode = "compact" | "board";
 
 type FacetEntry = {
   value: string;
@@ -56,7 +55,6 @@ const SCOPE_LABELS: Record<ScopeType, string> = {
 
 function App() {
   const [scope, setScope] = useState<ScopeType>("library");
-  const [viewMode, setViewMode] = useState<ViewMode>("compact");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<BookmarkStatus | "all">("all");
   const [categoryFilter, setCategoryFilter] = useState("");
@@ -75,7 +73,6 @@ function App() {
   const [showCategoryStudio, setShowCategoryStudio] = useState(false);
   const [ruleCanonical, setRuleCanonical] = useState("");
   const [ruleAliases, setRuleAliases] = useState("");
-  const [rulePinned, setRulePinned] = useState(false);
   const [authState, setAuthState] = useState<AuthState>({
     mode: "guest",
     syncStatus: "idle"
@@ -96,9 +93,6 @@ function App() {
   const hasActiveSearch = debouncedQuery.length > 0;
 
   const selectedBookmark = useMemo(() => items.find((item) => item.id === selectedBookmarkId) ?? null, [items, selectedBookmarkId]);
-  const rankedIndexById = useMemo(() => {
-    return new Map(items.map((item, index) => [item.id, index]));
-  }, [items]);
   const quickRailItems = useMemo(() => {
     if (hasActiveSearch) {
       return items.slice(0, 20);
@@ -254,6 +248,11 @@ function App() {
       }
       setQuickDockPinnedIds([]);
     }
+  }
+
+  function openOptionsPage() {
+    const optionsUrl = chrome.runtime.getURL("options/index.html");
+    window.open(optionsUrl, "_blank", "noopener,noreferrer");
   }
 
   async function handleSignInOAuth() {
@@ -662,13 +661,11 @@ function App() {
 
     await sendRuntimeMessage("manager/categoryRules/upsert", {
       canonical: ruleCanonical,
-      aliases,
-      pinned: rulePinned
+      aliases
     });
 
     setRuleCanonical("");
     setRuleAliases("");
-    setRulePinned(false);
     await reloadMeta();
   }
 
@@ -690,41 +687,6 @@ function App() {
       setError(toErrorMessage(commandError));
     }
   }
-
-  const boardColumns = useMemo(() => {
-    const pinnedRules = categoryRules.filter((rule) => rule.pinned).map((rule) => rule.canonical);
-    const dynamicCategories = items.map((item) => item.category).filter((value): value is string => Boolean(value));
-    const ordered = Array.from(new Set(["Uncategorized", ...pinnedRules, ...dynamicCategories])).filter(Boolean);
-
-    const map = new Map<string, SemanticSearchItem[]>();
-    for (const category of ordered) {
-      map.set(category, []);
-    }
-    for (const item of items) {
-      const category = item.category || "Uncategorized";
-      if (!map.has(category)) {
-        map.set(category, []);
-      }
-      map.get(category)?.push(item);
-    }
-
-    for (const [category, columnItems] of map.entries()) {
-      if (hasActiveSearch) {
-        columnItems.sort((left, right) => {
-          const leftRank = rankedIndexById.get(left.id) ?? Number.MAX_SAFE_INTEGER;
-          const rightRank = rankedIndexById.get(right.id) ?? Number.MAX_SAFE_INTEGER;
-          return leftRank - rightRank;
-        });
-      } else {
-        columnItems.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      }
-      if (columnItems.length === 0 && category !== "Uncategorized" && !pinnedRules.includes(category)) {
-        map.delete(category);
-      }
-    }
-
-    return map;
-  }, [items, categoryRules, hasActiveSearch, rankedIndexById]);
 
   const topCategorySuggestions = useMemo(() => {
     return Array.from(new Set([...categoryRules.map((rule) => rule.canonical), ...categories.map((entry) => entry.value)])).slice(0, 8);
@@ -750,7 +712,7 @@ function App() {
         <div class="title-row">
           <div>
             <h1>MuseMark</h1>
-            <p>AI associative retrieval, category boards, and full lifecycle CRUD.</p>
+            <p>AI associative retrieval and full lifecycle CRUD.</p>
           </div>
 
           <div class="top-actions">
@@ -768,10 +730,6 @@ function App() {
             <button class="btn" disabled={authBusy} onClick={() => void handleSyncNow()}>
               Sync now
             </button>
-            <div class="view-switch">
-              <button class={`chip ${viewMode === "compact" ? "active" : ""}`} onClick={() => setViewMode("compact")}>Home</button>
-              <button class={`chip ${viewMode === "board" ? "active" : ""}`} onClick={() => setViewMode("board")}>Board</button>
-            </div>
           </div>
         </div>
 
@@ -798,6 +756,10 @@ function App() {
             Cmd/Ctrl+K
           </button>
         </div>
+
+        <button class="btn primary dock-control-jump-btn" onClick={openOptionsPage}>
+          Open Dock Control
+        </button>
 
         <div class="toolbar">
           <button class="btn primary" onClick={() => void reloadAll()}>
@@ -985,10 +947,6 @@ function App() {
               onInput={(event) => setRuleAliases((event.currentTarget as HTMLInputElement).value)}
               placeholder="Aliases, comma separated"
             />
-            <label class="inline-check">
-              <input type="checkbox" checked={rulePinned} onChange={(event) => setRulePinned((event.currentTarget as HTMLInputElement).checked)} />
-              Pin in board
-            </label>
             <button class="btn primary" onClick={() => void handleCreateRule()}>
               Add / Merge Rule
             </button>
@@ -1000,7 +958,6 @@ function App() {
               <article class="rule-card" key={rule.id}>
                 <div class="rule-title-row">
                   <strong>{rule.canonical}</strong>
-                  {rule.pinned && <span class="tiny-pill">Pinned</span>}
                 </div>
                 <div class="rule-alias-row">
                   {rule.aliases.length === 0 ? <span class="muted">No aliases</span> : rule.aliases.map((alias) => <span class="tag" key={alias}>{alias}</span>)}
@@ -1015,74 +972,26 @@ function App() {
         )}
 
         <section class="content-panel">
-          {viewMode === "compact" ? (
-            <div class="compact-home">
-              <div class="bookmark-rail">
-                {quickRailItems.map((item) => (
-                  <button key={item.id} class="rail-item" onClick={() => setSelectedBookmarkId(item.id)} title={item.title}>
-                    <FaviconBadge item={item} />
-                    <span>{item.title}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div class="compact-list">
-                {compactItems.map((item) => (
-                  <CompactBookmarkRow
-                    key={item.id}
-                    item={item}
-                    onOpenDetails={() => setSelectedBookmarkId(item.id)}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div class="board-wrap">
-              {Array.from(boardColumns.entries()).map(([columnCategory, columnItems]) => (
-                <section
-                  key={columnCategory}
-                  class="board-column"
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const id = event.dataTransfer?.getData("text/musemark-bookmark-id");
-                    if (!id) {
-                      return;
-                    }
-                    void handleMoveToCategory(id, columnCategory === "Uncategorized" ? undefined : columnCategory);
-                  }}
-                >
-                  <header class="column-header">
-                    <h3>{columnCategory}</h3>
-                    <span>{columnItems.length}</span>
-                  </header>
-
-                  <div class="column-cards">
-                    {columnItems.map((item) => (
-                      <BookmarkCard
-                        key={item.id}
-                        item={item}
-                        dockPinned={quickDockPinnedSet.has(item.id)}
-                        scope={scope}
-                        categorySuggestions={topCategorySuggestions}
-                        tagSuggestions={tags.slice(0, 12).map((entry) => entry.value)}
-                        onSelect={() => setSelectedBookmarkId(item.id)}
-                        variant="feed"
-                        onSave={handleSave}
-                        onMoveToTrash={handleMoveToTrash}
-                        onRestore={handleRestore}
-                        onDeletePermanent={handleDeletePermanent}
-                        onRetryAi={handleRetryAi}
-                        onMoveToCategory={handleMoveToCategory}
-                        onPinToDock={handlePinToDock}
-                        onUnpinFromDock={handleUnpinFromDock}
-                      />
-                    ))}
-                  </div>
-                </section>
+          <div class="compact-home">
+            <div class="bookmark-rail">
+              {quickRailItems.map((item) => (
+                <button key={item.id} class="rail-item" onClick={() => setSelectedBookmarkId(item.id)} title={item.title}>
+                  <FaviconBadge item={item} />
+                  <span>{item.title}</span>
+                </button>
               ))}
             </div>
-          )}
+
+            <div class="compact-list">
+              {compactItems.map((item) => (
+                <CompactBookmarkRow
+                  key={item.id}
+                  item={item}
+                  onOpenDetails={() => setSelectedBookmarkId(item.id)}
+                />
+              ))}
+            </div>
+          </div>
         </section>
       </main>
 

@@ -15,6 +15,7 @@ export interface RuntimeResponse<TData = unknown> {
 export const QUICKDOCK_MESSAGE_TYPES = {
   getState: "quickDock/getState",
   listEntries: "quickDock/listEntries",
+  controlData: "quickDock/controlData",
   open: "quickDock/open",
   pin: "quickDock/pin",
   unpin: "quickDock/unpin",

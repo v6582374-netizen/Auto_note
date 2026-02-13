@@ -38,7 +38,7 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 1. 用户通过快捷键触发保存当前页面
 2. 内容脚本抓取页面信息并回传后台
 3. 后台执行 AI 摘要与分类（并维护 embedding）
-4. Manager 提供列表、看板、命令面板与语义检索
+4. Manager 提供紧凑列表、命令面板与语义检索
 5. QuickDock 在网页侧持续提供快捷访问入口
 6. 可选接入 Supabase，实现账号与跨端同步
 
@@ -59,10 +59,10 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 | AI 摘要与分类 | 完成 | 双阶段流程（analyze + classify），失败可回退/重试 |
 | 语义检索 | 完成 | lexical + semantic + taxonomy + recency 混合排序 |
 | 低置信度澄清 | 完成 | 模糊查询可触发澄清选项，二次排序 |
-| QuickDock | 完成 | 网页侧快捷入口，支持 pin/dismiss/layout |
+| QuickDock | 完成 | 网页侧常驻入口，右侧竖向 Top10，支持 pin/dismiss/layout 与数字快捷键 |
 | 回收站生命周期 | 完成 | Trash / Restore / Permanent Delete / Retention 清理 |
 | 导入导出 | 完成 | Manager 端 JSON 导入导出 |
-| 分类规则工作台 | 完成 | Canonical + aliases + pinned |
+| 分类规则工作台 | 完成 | Canonical + aliases 管理 |
 | Supabase 登录与同步 | 完成（可选） | Google OAuth + Magic Link + 本地迁移上云 |
 | 自动化测试与 CI | 待完善 | 当前以手动验证和 `tsc` 检查为主 |
 
@@ -81,11 +81,12 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 
 ### 2) Manager 管理中心
 
-- 视图：`Home(紧凑列表)` + `Board(分类看板)`
+- 视图：`Home(紧凑列表)`
 - 范围：`Inbox / Library / Trash`
 - 操作：编辑分类/标签/备注、重试 AI、回收站操作
 - 命令面板：`Cmd/Ctrl + K`
 - 工具：embedding 回填、favicon 回填、导入导出、分类规则管理
+- Dock 入口：提供明显按钮跳转至 `Options` 的 Dock Control 页面
 
 ### 3) 语义检索与可解释排序
 
@@ -96,10 +97,14 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 
 ### 4) QuickDock（网页侧快速入口）
 
-- 支持折叠/展开/固定
-- 显示推荐条目与快捷动作
+- 默认右侧竖向常驻（浏览器网页内）
+- 默认展示 Top10 常用书签（打开频次 + 时间衰减）
 - 支持 pin/unpin、临时 dismiss
-- 支持从 Dock 快速打开 Manager 或保存当前页
+- 支持快捷键直达：`Ctrl + 1..0`
+- 支持从 Dock 快速打开 Library 或保存当前页
+- 支持在 `Options` 中分区管理：
+  - `Pinned to Dock`（手动 Pin 区）
+  - `Suggested for Dock`（算法推荐区）
 
 ### 5) 可选云同步与账号体系
 
@@ -128,7 +133,8 @@ flowchart LR
 
 - **单一后台编排**：所有关键状态机与数据写入在 `background`，避免多端写冲突。
 - **本地优先**：核心功能不依赖云即可工作；云同步为可选增强。
-- **权限收敛**：通过 runtime request origin permission，避免默认全域长期授权。
+- **能力边界**：QuickDock 运行在浏览器网页上下文，不能跨整个 macOS 系统常驻显示。
+- **权限策略**：为网页内常驻 Dock 启用全站注入；AI/Supabase 请求仍按域名权限控制。
 - **作业化后台任务**：embedding 回填、回收站清理、同步由 alarms + job lease 驱动。
 
 <a id="project-structure"></a>
@@ -208,6 +214,8 @@ npm run build
 | `classificationMode` | 分类策略 | `by_type` |
 | `semanticSearchEnabled` | 是否启用语义检索 | `true` |
 | `searchFallbackMode` | 检索降级策略 | `local_hybrid` |
+| `quickDockCollapsedByDefault` | QuickDock 默认可见性 | `false` |
+| `quickDockMaxItems` | QuickDock 展示数量 | `10` |
 | `excludedUrlPatterns` | 隐私排除规则（不走 AI） | `[]` |
 | `trashRetentionDays` | 回收站保留天数 | `30` |
 
@@ -289,8 +297,8 @@ npm run check
 
 ### 权限设计原则
 
-- 默认不授予广域 host 权限
-- 对 AI/Supabase 域名按需申请 runtime 权限
+- 为网页内常驻 Dock 启用 `http/https` 页面注入权限
+- 对 AI/Supabase 域名请求继续走权限控制与显式配置
 - 所有能力围绕“书签保存/整理/检索/同步”单一用途
 
 <a id="roadmap"></a>
@@ -332,7 +340,11 @@ npm run check
 
 可以。核心书签与检索能力支持本地独立运行。
 
-### Q3: Magic Link 登录失败怎么办？
+### Q3: QuickDock 能像 macOS Dock 一样跨系统常驻吗？
+
+不能。Chrome 扩展只能在浏览器上下文显示 UI，当前实现为网页内常驻 Dock。
+
+### Q4: Magic Link 登录失败怎么办？
 
 检查以下项是否一致：
 

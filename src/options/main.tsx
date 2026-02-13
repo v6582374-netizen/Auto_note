@@ -2,14 +2,27 @@ import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { DEFAULT_SETTINGS } from "../shared/settings";
 import { sendRuntimeMessage } from "../shared/runtime";
-import type { ExtensionSettings } from "../shared/types";
+import type { DockEntry, ExtensionSettings } from "../shared/types";
 import "./styles.css";
+
+type QuickDockControlDataResponse = {
+  enabled: boolean;
+  profileId: string;
+  maxItems: number;
+  pinnedEntries: DockEntry[];
+  suggestedEntries: DockEntry[];
+};
 
 function App() {
   const [settings, setSettings] = useState<ExtensionSettings>(DEFAULT_SETTINGS);
   const [excludedText, setExcludedText] = useState("");
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("Loading...");
+  const [dockControlLoading, setDockControlLoading] = useState(true);
+  const [dockControlError, setDockControlError] = useState("");
+  const [dockEnabled, setDockEnabled] = useState(true);
+  const [dockPinnedEntries, setDockPinnedEntries] = useState<DockEntry[]>([]);
+  const [dockSuggestedEntries, setDockSuggestedEntries] = useState<DockEntry[]>([]);
 
   const weights = useMemo(() => settings.rankingWeights, [settings.rankingWeights]);
 
@@ -24,6 +37,10 @@ function App() {
         setStatus(toErrorMessage(error));
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    void reloadDockControlData();
   }, []);
 
   function buildSettingsPayload(): ExtensionSettings {
@@ -82,6 +99,64 @@ function App() {
         [key]: Number.isFinite(value) ? value : 0
       }
     });
+  }
+
+  async function reloadDockControlData() {
+    setDockControlLoading(true);
+    setDockControlError("");
+    try {
+      const response = await sendRuntimeMessage<QuickDockControlDataResponse>("quickDock/controlData", {
+        suggestedLimit: 20
+      });
+      setDockEnabled(Boolean(response.enabled));
+      setDockPinnedEntries(Array.isArray(response.pinnedEntries) ? response.pinnedEntries : []);
+      setDockSuggestedEntries(Array.isArray(response.suggestedEntries) ? response.suggestedEntries : []);
+    } catch (error) {
+      setDockControlError(toErrorMessage(error));
+      setDockPinnedEntries([]);
+      setDockSuggestedEntries([]);
+    } finally {
+      setDockControlLoading(false);
+    }
+  }
+
+  async function handlePinToDock(entry: DockEntry) {
+    if (entry.kind !== "bookmark") {
+      return;
+    }
+    try {
+      await sendRuntimeMessage("quickDock/pin", {
+        bookmarkId: entry.id
+      });
+      await reloadDockControlData();
+    } catch (error) {
+      setDockControlError(toErrorMessage(error));
+    }
+  }
+
+  async function handleUnpinFromDock(entry: DockEntry) {
+    if (entry.kind !== "bookmark") {
+      return;
+    }
+    try {
+      await sendRuntimeMessage("quickDock/unpin", {
+        bookmarkId: entry.id
+      });
+      await reloadDockControlData();
+    } catch (error) {
+      setDockControlError(toErrorMessage(error));
+    }
+  }
+
+  async function handleOpenDockEntry(entry: DockEntry) {
+    try {
+      await sendRuntimeMessage("quickDock/open", {
+        id: entry.id,
+        url: entry.url
+      });
+    } catch (error) {
+      setDockControlError(toErrorMessage(error));
+    }
   }
 
   return (
@@ -412,7 +487,7 @@ function App() {
           </div>
 
           <div class="field">
-            <label>QuickDock default state</label>
+            <label>QuickDock default visibility</label>
             <select
               value={settings.quickDockCollapsedByDefault ? "collapsed" : "expanded"}
               onChange={(event) =>
@@ -422,8 +497,8 @@ function App() {
                 })
               }
             >
-              <option value="collapsed">Collapsed</option>
-              <option value="expanded">Expanded</option>
+              <option value="expanded">Visible</option>
+              <option value="collapsed">Hidden</option>
             </select>
           </div>
 
@@ -438,9 +513,7 @@ function App() {
                 })
               }
             >
-              <option value="4">4</option>
-              <option value="6">6</option>
-              <option value="8">8</option>
+              <option value="10">10</option>
             </select>
           </div>
 
@@ -543,6 +616,94 @@ function App() {
             </button>
           </div>
         </div>
+
+        <section class="dock-control">
+          <div class="dock-control-head">
+            <h2>Dock Control</h2>
+            <span>
+              {dockEnabled ? "Enabled" : "Disabled"} · Max {settings.quickDockMaxItems}
+            </span>
+          </div>
+          {dockControlError && <div class="dock-control-error">{dockControlError}</div>}
+
+          <div class="dock-section">
+            <div class="dock-section-head">
+              <strong>Pinned to Dock</strong>
+              <span>{dockPinnedEntries.length}</span>
+            </div>
+            {dockControlLoading ? (
+              <div class="dock-empty">Loading pinned bookmarks...</div>
+            ) : dockPinnedEntries.length === 0 ? (
+              <div class="dock-empty">No pinned bookmarks.</div>
+            ) : (
+              <div class="dock-list">
+                {dockPinnedEntries.map((entry) => (
+                  <div class="dock-row" key={`pinned-${entry.id}`}>
+                    <div class="dock-row-main">
+                      {entry.favIconUrl ? (
+                        <img class="dock-favicon" src={entry.favIconUrl} alt={entry.domain || entry.title} />
+                      ) : (
+                        <span class="dock-favicon dock-fallback">{(entry.domain || entry.title || "?").slice(0, 1).toUpperCase()}</span>
+                      )}
+                      <div class="dock-row-copy">
+                        <strong>{entry.title || entry.url || entry.id}</strong>
+                        <small>{entry.domain || entry.url || "No URL"}</small>
+                      </div>
+                    </div>
+                    <div class="dock-row-actions">
+                      <button class="btn" type="button" onClick={() => void handleOpenDockEntry(entry)} disabled={!entry.url}>
+                        Open
+                      </button>
+                      <button class="btn" type="button" onClick={() => void handleUnpinFromDock(entry)}>
+                        Unpin
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div class="dock-divider" />
+
+          <div class="dock-section">
+            <div class="dock-section-head">
+              <strong>Suggested for Dock</strong>
+              <span>{dockSuggestedEntries.length}</span>
+            </div>
+            {dockControlLoading ? (
+              <div class="dock-empty">Loading suggestions...</div>
+            ) : dockSuggestedEntries.length === 0 ? (
+              <div class="dock-empty">No suggested bookmarks right now.</div>
+            ) : (
+              <div class="dock-list">
+                {dockSuggestedEntries.map((entry) => (
+                  <div class="dock-row" key={`suggested-${entry.id}`}>
+                    <div class="dock-row-main">
+                      {entry.favIconUrl ? (
+                        <img class="dock-favicon" src={entry.favIconUrl} alt={entry.domain || entry.title} />
+                      ) : (
+                        <span class="dock-favicon dock-fallback">{(entry.domain || entry.title || "?").slice(0, 1).toUpperCase()}</span>
+                      )}
+                      <div class="dock-row-copy">
+                        <strong>{entry.title || entry.url || entry.id}</strong>
+                        <small>{entry.domain || entry.url || "No URL"}</small>
+                      </div>
+                    </div>
+                    <div class="dock-row-actions">
+                      <button class="btn" type="button" onClick={() => void handleOpenDockEntry(entry)} disabled={!entry.url}>
+                        Open
+                      </button>
+                      <button class="btn" type="button" onClick={() => void handlePinToDock(entry)}>
+                        Pin
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
 
         <div class="footer">
           <button class="btn primary" onClick={() => void saveSettings()} disabled={saving}>

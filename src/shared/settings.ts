@@ -17,8 +17,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   temperature: 0.2,
   maxChars: 50_000,
   quickDockEnabled: true,
-  quickDockCollapsedByDefault: true,
-  quickDockMaxItems: 6,
+  quickDockCollapsedByDefault: false,
+  quickDockMaxItems: 10,
   quickDockPinMode: "manual_first",
   classificationMode: "by_type",
   preferReuseCategories: true,
@@ -179,8 +179,9 @@ function roundWeight(value: number): number {
 }
 
 function normalizeQuickDockMaxItems(value: number): number {
-  if (value === 4 || value === 6 || value === 8) {
-    return value;
+  // Force migration from legacy presets (4/6/8) to the new default 10 slots.
+  if (value === 10 || value === 4 || value === 6 || value === 8) {
+    return 10;
   }
   return DEFAULT_SETTINGS.quickDockMaxItems;
 }

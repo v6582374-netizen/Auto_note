@@ -38,18 +38,20 @@ Designed for researchers, builders, and heavy information workers.
 
 ### Permissions justification
 - `storage`: save settings and auth/session metadata locally
-- `scripting`: inject content script into active tab when user triggers save
+- `scripting`: on-demand injection fallback when manual capture is triggered
 - `activeTab`: capture current page content only on user action
 - `commands`: keyboard shortcut for one-key save
 - `notifications`: show fallback/error notifications when page injection is unavailable
 - `alarms`: schedule background jobs for sync/cleanup/backfill
 - `identity`: Google OAuth login via Chrome identity flow
+- `host_permissions: http://*/*, https://*/*`: display QuickDock consistently on regular web pages
+- `content_scripts (http/https)`: inject local QuickDock UI and page-capture helpers
 - `permissions`: request optional site access at runtime per configured API origin
 - `optional_host_permissions: https://*/*`: only used for runtime origin grants (for user-configured AI/Supabase domains)
 
 Security behavior:
-- No broad host access is granted by default.
-- Extension asks permission only for specific domains configured by user (e.g. `https://api.openai.com/*`, `https://<project>.supabase.co/*`).
+- Broad web-page access is used only to render the on-page QuickDock experience.
+- AI/Supabase requests still rely on user-configured domains (e.g. `https://api.openai.com/*`, `https://<project>.supabase.co/*`).
 
 ### Remote code declaration
 - Select: No remote code execution.
@@ -76,7 +78,8 @@ Use your deployed policy page URL (must be public), for example:
 4. Verify bookmark appears in Inbox/Library.
 5. Open details drawer, edit category/tags/note, then save.
 6. Move item to Trash and restore it.
-7. Optional auth test:
+7. Verify QuickDock appears on page right side and opens top items with `Ctrl+1..0`.
+8. Optional auth test:
    - click Sign In -> Continue with Google
    - verify account status appears in top-right
 

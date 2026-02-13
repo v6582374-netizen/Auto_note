@@ -183,6 +183,12 @@ type QuickDockListEntriesPayload = {
   limit?: number;
 };
 
+type QuickDockControlDataPayload = {
+  currentUrl?: string;
+  profileId?: string;
+  suggestedLimit?: number;
+};
+
 type QuickDockOpenPayload = {
   id?: string;
   url?: string;
@@ -211,6 +217,14 @@ type QuickDockState = {
   profiles: DockProfile[];
   pinnedIds: string[];
   entries: DockEntry[];
+};
+
+type QuickDockControlData = {
+  enabled: boolean;
+  profileId: string;
+  maxItems: number;
+  pinnedEntries: DockEntry[];
+  suggestedEntries: DockEntry[];
 };
 
 type QuickDockStorage = {
@@ -528,9 +542,13 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
       return await backfillFavicons(message.payload as { limit?: number } | undefined);
 
     case "manager/categoryRules/list":
-      return {
-        items: await listCategoryRules()
-      };
+      {
+        const cleanup = await cleanupEmptyCategoryRules();
+        return {
+          items: await listCategoryRules(),
+          cleanup
+        };
+      }
 
     case "manager/categoryRules/upsert":
       return {
@@ -574,6 +592,9 @@ async function routeRuntimeMessage(message: MessageEnvelope, sender: chrome.runt
 
     case "quickDock/listEntries":
       return await listQuickDockEntries((message.payload ?? {}) as QuickDockListEntriesPayload);
+
+    case "quickDock/controlData":
+      return await getQuickDockControlData((message.payload ?? {}) as QuickDockControlDataPayload);
 
     case "quickDock/open":
       return await openQuickDockEntry((message.payload ?? {}) as QuickDockOpenPayload);
@@ -1574,6 +1595,33 @@ async function listQuickDockEntries(payload: QuickDockListEntriesPayload): Promi
   };
 }
 
+async function getQuickDockControlData(payload: QuickDockControlDataPayload): Promise<QuickDockControlData> {
+  const settings = await getSettingsFromStorage();
+  const storage = await ensureQuickDockStorage(settings);
+  const requestedProfile = payload.profileId ? storage.profiles.find((entry) => entry.id === payload.profileId) : undefined;
+  const profileId = requestedProfile?.id ?? storage.layout.activeProfileId;
+  const pinnedEntries = await listPinnedDockEntries(storage, profileId);
+  const suggestedLimitCandidate = Number.isFinite(payload.suggestedLimit) ? Number(payload.suggestedLimit) : 20;
+  const suggestedLimit = Math.max(1, Math.min(50, Math.round(suggestedLimitCandidate)));
+  const pinnedSet = new Set(pinnedEntries.map((entry) => entry.id));
+  const candidates = (await listQuickDockCandidates()).filter((item) => !pinnedSet.has(item.id));
+  const ranked = rankQuickDockCandidates({
+    items: candidates,
+    prefsById: storage.prefsById,
+    currentUrl: payload.currentUrl,
+    limit: suggestedLimit
+  });
+  const suggestedEntries = ranked.map((row) => createBookmarkDockEntry(row.item, false, row.ranking));
+
+  return {
+    enabled: settings.quickDockEnabled,
+    profileId,
+    maxItems: resolveQuickDockLimit(settings.quickDockMaxItems, settings.quickDockMaxItems),
+    pinnedEntries,
+    suggestedEntries
+  };
+}
+
 async function openQuickDockEntry(payload: QuickDockOpenPayload): Promise<{ opened: boolean; action?: string }> {
   const actionFromId =
     payload.id === "action:open_library" ? "open_library" : payload.id === "action:save_current_page" ? "save_current_page" : undefined;
@@ -1762,114 +1810,102 @@ async function buildQuickDockEntries(input: {
   }
 
   const candidates = await listQuickDockCandidates();
-  const itemById = new Map(candidates.map((item) => [item.id, item]));
-  const pinnedIds = getPinnedIdsForProfile(input.storage, input.profileId);
-
-  const pinnedEntries: DockEntry[] = [];
-  for (const id of pinnedIds) {
-    const item = itemById.get(id);
-    if (!item) {
-      continue;
-    }
-    pinnedEntries.push(createBookmarkDockEntry(item, true));
-  }
+  const pinnedEntries = await listPinnedDockEntries(input.storage, input.profileId);
 
   const pinnedSet = new Set<string>(pinnedEntries.map((entry) => entry.id));
   const remainingSlots = Math.max(0, limit - pinnedEntries.length);
   const result: DockEntry[] = [...pinnedEntries];
   if (input.settings.quickDockPinMode === "manual_only") {
-    const trimmed = result.slice(0, limit);
-    if (trimmed.length === 0) {
-      trimmed.push(
-        {
-          id: "action:open_library",
-          kind: "action",
-          title: "Open Library",
-          subtitle: "Manage bookmarks",
-          action: "open_library"
-        },
-        {
-          id: "action:save_current_page",
-          kind: "action",
-          title: "Save Current Page",
-          subtitle: "Capture with MuseMark",
-          action: "save_current_page"
-        }
-      );
-    }
-    return trimmed.slice(0, limit);
+    return result.slice(0, limit);
   }
 
   if (remainingSlots > 0) {
     const activeItems = candidates.filter((item) => !pinnedSet.has(item.id));
-    const maxRecentClicks = Math.max(
-      1,
-      ...activeItems.map((item) => {
-        const pref = input.storage.prefsById.get(item.id);
-        return getDockRecentClickCount(pref);
-      })
-    );
-
-    const ranked = activeItems
-      .map((item) => {
-        const pref = input.storage.prefsById.get(item.id);
-        const dismissedUntilMs = pref?.dismissedUntil ? Date.parse(pref.dismissedUntil) : Number.NaN;
-        if (Number.isFinite(dismissedUntilMs) && dismissedUntilMs > Date.now()) {
-          return undefined;
-        }
-
-        const clickCount = getDockRecentClickCount(pref);
-        const clickScore = clamp01(Math.log1p(clickCount) / Math.log1p(maxRecentClicks));
-        const openRecencyScore = computeTimeDecayScore(pref?.dockLastOpenedAt, 21);
-        const saveRecencyScore = computeTimeDecayScore(item.lastSavedAt || item.updatedAt || item.createdAt, 28);
-        const affinityScore = computeDomainAffinityScore(input.currentUrl, item);
-        const score = clickScore * 0.45 + openRecencyScore * 0.3 + saveRecencyScore * 0.15 + affinityScore * 0.1;
-
-        return {
-          item,
-          ranking: {
-            score: clamp01(score),
-            clickScore,
-            openRecencyScore,
-            saveRecencyScore,
-            affinityScore
-          } satisfies DockRankingState
-        };
-      })
-      .filter((entry): entry is { item: BookmarkItem; ranking: DockRankingState } => Boolean(entry))
-      .sort((left, right) => {
-        if (right.ranking.score !== left.ranking.score) {
-          return right.ranking.score - left.ranking.score;
-        }
-        return right.item.updatedAt.localeCompare(left.item.updatedAt);
-      })
-      .slice(0, remainingSlots);
+    const ranked = rankQuickDockCandidates({
+      items: activeItems,
+      prefsById: input.storage.prefsById,
+      currentUrl: input.currentUrl,
+      limit: remainingSlots
+    });
 
     for (const row of ranked) {
       result.push(createBookmarkDockEntry(row.item, false, row.ranking));
     }
   }
 
-  if (result.length < limit) {
-    result.push({
-      id: "action:open_library",
-      kind: "action",
-      title: "Open Library",
-      subtitle: "Manage bookmarks",
-      action: "open_library"
-    });
-  }
-  if (result.length < limit) {
-    result.push({
-      id: "action:save_current_page",
-      kind: "action",
-      title: "Save Current Page",
-      subtitle: "Capture with MuseMark",
-      action: "save_current_page"
-    });
+  return result.slice(0, limit);
+}
+
+async function listPinnedDockEntries(storage: QuickDockStorage, profileId: string): Promise<DockEntry[]> {
+  const pinnedIds = getPinnedIdsForProfile(storage, profileId);
+  if (!pinnedIds.length) {
+    return [];
   }
 
-  return result.slice(0, limit);
+  const bookmarks = await db.bookmarks.bulkGet(pinnedIds);
+  const itemById = new Map<string, BookmarkItem>();
+  for (const item of bookmarks) {
+    if (!item || item.status === "trashed" || !isHttpUrl(item.url)) {
+      continue;
+    }
+    itemById.set(item.id, item);
+  }
+
+  return pinnedIds.map((id) => itemById.get(id)).filter((item): item is BookmarkItem => Boolean(item)).map((item) => createBookmarkDockEntry(item, true));
+}
+
+function rankQuickDockCandidates(input: {
+  items: BookmarkItem[];
+  prefsById: Map<string, DockItemPreference>;
+  currentUrl?: string;
+  limit: number;
+}): Array<{ item: BookmarkItem; ranking: DockRankingState }> {
+  if (input.limit <= 0 || input.items.length === 0) {
+    return [];
+  }
+
+  const maxRecentClicks = Math.max(
+    1,
+    ...input.items.map((item) => {
+      const pref = input.prefsById.get(item.id);
+      return getDockRecentClickCount(pref);
+    })
+  );
+
+  return input.items
+    .map((item) => {
+      const pref = input.prefsById.get(item.id);
+      const dismissedUntilMs = pref?.dismissedUntil ? Date.parse(pref.dismissedUntil) : Number.NaN;
+      if (Number.isFinite(dismissedUntilMs) && dismissedUntilMs > Date.now()) {
+        return undefined;
+      }
+
+      const clickCount = getDockRecentClickCount(pref);
+      const clickScore = clamp01(Math.log1p(clickCount) / Math.log1p(maxRecentClicks));
+      const openRecencyScore = computeTimeDecayScore(pref?.dockLastOpenedAt, 21);
+      const saveRecencyScore = computeTimeDecayScore(item.lastSavedAt || item.updatedAt || item.createdAt, 28);
+      const affinityScore = computeDomainAffinityScore(input.currentUrl, item);
+      const score = clickScore * 0.45 + openRecencyScore * 0.3 + saveRecencyScore * 0.15 + affinityScore * 0.1;
+
+      return {
+        item,
+        ranking: {
+          score: clamp01(score),
+          clickScore,
+          openRecencyScore,
+          saveRecencyScore,
+          affinityScore
+        } satisfies DockRankingState
+      };
+    })
+    .filter((entry): entry is { item: BookmarkItem; ranking: DockRankingState } => Boolean(entry))
+    .sort((left, right) => {
+      if (right.ranking.score !== left.ranking.score) {
+        return right.ranking.score - left.ranking.score;
+      }
+      return right.item.updatedAt.localeCompare(left.item.updatedAt);
+    })
+    .slice(0, input.limit);
 }
 
 async function listQuickDockCandidates(): Promise<BookmarkItem[]> {
@@ -2094,7 +2130,7 @@ function resolveQuickDockLimit(input: number | undefined, fallback: number): num
   if (candidate <= 0) {
     return fallback;
   }
-  return Math.max(2, Math.min(8, Math.round(candidate)));
+  return Math.max(2, Math.min(10, Math.round(candidate)));
 }
 
 function getDockRecentClickCount(pref: DockItemPreference | undefined): number {
@@ -2356,6 +2392,41 @@ async function listCategoryRules(): Promise<CategoryRule[]> {
       }
       return left.canonical.localeCompare(right.canonical);
     });
+}
+
+async function cleanupEmptyCategoryRules(): Promise<{ deletedCount: number; deletedCanonicals: string[] }> {
+  const rules = await listCategoryRules();
+  if (rules.length === 0) {
+    return {
+      deletedCount: 0,
+      deletedCanonicals: []
+    };
+  }
+
+  const bookmarks = await db.bookmarks.toArray();
+  const referenced = new Set(
+    bookmarks
+      .map((item) => normalizeCategory(item.category))
+      .filter((value): value is string => Boolean(value))
+      .map((value) => normalizeLookup(value))
+  );
+
+  const stale = rules.filter((rule) => !referenced.has(normalizeLookup(rule.canonical)));
+  if (stale.length === 0) {
+    return {
+      deletedCount: 0,
+      deletedCanonicals: []
+    };
+  }
+
+  for (const rule of stale) {
+    await db.categoryRules.delete(rule.id);
+  }
+
+  return {
+    deletedCount: stale.length,
+    deletedCanonicals: stale.map((rule) => rule.canonical)
+  };
 }
 
 async function upsertCategoryRule(payload: {
@@ -4754,7 +4825,8 @@ async function pushToCloud(settings: ExtensionSettings, session: AuthSession): P
     }
   }
 
-  const rules = await db.categoryRules.toArray();
+  const rules = await listCategoryRules();
+  await deleteCloudCategoryRulesMissingLocally(settings, session, rules);
   if (rules.length > 0) {
     const rulesPayload: CloudCategoryRuleRow[] = rules.map((rule) => ({
       user_id: session.user.id,
@@ -4803,6 +4875,63 @@ async function pushToCloud(settings: ExtensionSettings, session: AuthSession): P
   return {
     pushedBookmarks
   };
+}
+
+async function deleteCloudCategoryRulesMissingLocally(
+  settings: ExtensionSettings,
+  session: AuthSession,
+  localRules: CategoryRule[]
+): Promise<void> {
+  const params = new URLSearchParams();
+  params.set("user_id", `eq.${session.user.id}`);
+  params.set("select", "canonical");
+  params.set("limit", "500");
+  const cloudRules = await requestSupabaseRest<Array<Pick<CloudCategoryRuleRow, "canonical">>>(
+    settings,
+    session.accessToken,
+    `/rest/v1/category_rules?${params.toString()}`,
+    { method: "GET" }
+  );
+
+  if (!Array.isArray(cloudRules) || cloudRules.length === 0) {
+    return;
+  }
+
+  const localCanonicalSet = new Set(localRules.map((rule) => normalizeLookup(rule.canonical)));
+  const staleCanonicals = Array.from(
+    new Set(
+      cloudRules
+        .map((row) => normalizeCategory(row.canonical))
+        .filter((value): value is string => Boolean(value))
+        .filter((canonical) => !localCanonicalSet.has(normalizeLookup(canonical)))
+    )
+  );
+
+  if (staleCanonicals.length === 0) {
+    return;
+  }
+
+  const chunkSize = 100;
+  for (let index = 0; index < staleCanonicals.length; index += chunkSize) {
+    const chunk = staleCanonicals.slice(index, index + chunkSize);
+    const deleteParams = new URLSearchParams();
+    deleteParams.set("user_id", `eq.${session.user.id}`);
+    deleteParams.set(
+      "canonical",
+      `in.(${chunk.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(",")})`
+    );
+    await requestSupabaseRest(
+      settings,
+      session.accessToken,
+      `/rest/v1/category_rules?${deleteParams.toString()}`,
+      {
+        method: "DELETE",
+        headers: {
+          Prefer: "return=minimal"
+        }
+      }
+    );
+  }
 }
 
 async function pullFromCloud(
