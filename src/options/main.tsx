@@ -177,464 +177,547 @@ function App() {
   }
 
   return (
-    <div class="wrap">
-      <section class="panel">
-        <div class="panel-head">
-          <h1>MuseMark Settings</h1>
-          <p>Configure API, privacy/cost limits, and semantic ranking behavior.</p>
+    <div class="options-shell">
+      <aside class="sidebar-glass">
+        <div class="sidebar-brand">
+          <p class="sidebar-kicker">MuseMark</p>
+          <h1>Options Console</h1>
+          <p>Linear x Arc aesthetics with a high-contrast, low-noise control surface.</p>
         </div>
 
-        <div class="form">
-          <div class="field full">
-            <label>Base URL</label>
-            <input
-              value={settings.baseUrl}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  baseUrl: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="https://api.openai.com"
-            />
-            <small>Saving settings will request runtime permission only for this domain.</small>
+        <div class="sidebar-metrics">
+          <div class="metric-chip">
+            <span>Cloud Sync</span>
+            <strong>{settings.cloudSyncEnabled ? "Enabled" : "Disabled"}</strong>
           </div>
-
-          <div class="field full">
-            <label>API Key</label>
-            <input
-              type="password"
-              value={settings.apiKey}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  apiKey: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="sk-..."
-            />
-            <small>Security: API Key is local-only and will never be synced to cloud.</small>
+          <div class="metric-chip">
+            <span>QuickDock</span>
+            <strong>{settings.quickDockEnabled ? "On" : "Off"}</strong>
           </div>
-
-          <div class="field">
-            <label>Cloud sync</label>
-            <select
-              value={settings.cloudSyncEnabled ? "on" : "off"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  cloudSyncEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
-                })
-              }
-            >
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
+          <div class="metric-chip">
+            <span>Model</span>
+            <strong>{settings.model || "Unset"}</strong>
           </div>
-
-          <div class="field">
-            <label>Auth bridge URL</label>
-            <input
-              value={settings.authBridgeUrl}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  authBridgeUrl: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="https://bridge.musemark.app"
-            />
+          <div class="metric-chip">
+            <span>Dock Slots</span>
+            <strong>{settings.quickDockMaxItems}</strong>
           </div>
+        </div>
 
-          <div class="field full">
-            <label>Supabase URL</label>
-            <input
-              value={settings.supabaseUrl}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  supabaseUrl: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="https://xxxx.supabase.co"
-            />
-            <small>Cloud sync/auth uses runtime permission for this domain only.</small>
+        <div class="sidebar-actions">
+          <button class="btn primary" onClick={() => void saveSettings()} disabled={saving}>
+            Save settings
+          </button>
+          <button class="btn" onClick={() => void testConnection()} disabled={saving}>
+            Test connection
+          </button>
+        </div>
+
+        <div class="sidebar-status">{status}</div>
+      </aside>
+
+      <main class="bento-main">
+        <section class="bento-card bento-hero">
+          <h2>Precision Control Surface</h2>
+          <p>Everything is grouped into geometric blocks for faster scanning and lower cognitive noise.</p>
+          <div class="hero-tags">
+            <span class="hero-tag active">Dark System</span>
+            <span class="hero-tag">Bento Grid</span>
+            <span class="hero-tag">Glass Sidebar</span>
           </div>
+        </section>
 
-          <div class="field full">
-            <label>Supabase anon key</label>
-            <input
-              type="password"
-              value={settings.supabaseAnonKey}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  supabaseAnonKey: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="eyJhbGci..."
-            />
-          </div>
-
-          <div class="field">
-            <label>Model</label>
-            <input
-              value={settings.model}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  model: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="gpt-4.1-mini"
-            />
-          </div>
-
-          <div class="field">
-            <label>Embedding model</label>
-            <input
-              value={settings.embeddingModel}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  embeddingModel: (event.currentTarget as HTMLInputElement).value
-                })
-              }
-              placeholder="text-embedding-3-small"
-            />
-          </div>
-
-          <div class="field">
-            <label>Temperature</label>
-            <input
-              type="number"
-              min="0"
-              max="1"
-              step="0.1"
-              value={settings.temperature}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  temperature: Number((event.currentTarget as HTMLInputElement).value)
-                })
-              }
-            />
-          </div>
-
-          <div class="field">
-            <label>Max chars for capture</label>
-            <input
-              type="number"
-              min="1000"
-              max="200000"
-              step="1000"
-              value={settings.maxChars}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  maxChars: Number((event.currentTarget as HTMLInputElement).value)
-                })
-              }
-            />
-          </div>
-
-          <div class="field">
-            <label>Embedding content mode</label>
-            <select
-              value={settings.embeddingContentMode}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  embeddingContentMode: (event.currentTarget as HTMLSelectElement).value as "readability_only" | "full_capture"
-                })
-              }
-            >
-              <option value="readability_only">Readability summary only</option>
-              <option value="full_capture">Full capture text (capped)</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Embedding max chars</label>
-            <input
-              type="number"
-              min="1000"
-              max="120000"
-              step="1000"
-              value={settings.embeddingMaxChars}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  embeddingMaxChars: Number((event.currentTarget as HTMLInputElement).value)
-                })
-              }
-            />
-          </div>
-
-          <div class="field">
-            <label>Semantic search</label>
-            <select
-              value={settings.semanticSearchEnabled ? "on" : "off"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  semanticSearchEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
-                })
-              }
-            >
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Fallback mode</label>
-            <select
-              value={settings.searchFallbackMode}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  searchFallbackMode: (event.currentTarget as HTMLSelectElement).value as "local_hybrid" | "lexical_only"
-                })
-              }
-            >
-              <option value="local_hybrid">Local hybrid</option>
-              <option value="lexical_only">Lexical only</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Web augment for ambiguous query</label>
-            <select
-              value={settings.webAugmentEnabled ? "on" : "off"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  webAugmentEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
-                })
-              }
-            >
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Clarify on low confidence</label>
-            <select
-              value={settings.clarifyOnLowConfidence ? "on" : "off"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  clarifyOnLowConfidence: (event.currentTarget as HTMLSelectElement).value === "on"
-                })
-              }
-            >
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Low confidence threshold</label>
-            <input
-              type="number"
-              min="0.4"
-              max="0.95"
-              step="0.01"
-              value={settings.lowConfidenceThreshold}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  lowConfidenceThreshold: Number((event.currentTarget as HTMLInputElement).value)
-                })
-              }
-            />
-          </div>
-
-          <div class="field">
-            <label>Max web augment calls/query</label>
-            <select
-              value={String(settings.maxWebAugmentPerQuery)}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  maxWebAugmentPerQuery: Number((event.currentTarget as HTMLSelectElement).value)
-                })
-              }
-            >
-              <option value="0">0</option>
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Trash retention days</label>
-            <input
-              type="number"
-              min="1"
-              max="365"
-              step="1"
-              value={settings.trashRetentionDays}
-              onInput={(event) =>
-                setSettings({
-                  ...settings,
-                  trashRetentionDays: Number((event.currentTarget as HTMLInputElement).value)
-                })
-              }
-            />
-          </div>
-
-          <div class="field">
-            <label>QuickDock</label>
-            <select
-              value={settings.quickDockEnabled ? "on" : "off"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  quickDockEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
-                })
-              }
-            >
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>QuickDock default visibility</label>
-            <select
-              value={settings.quickDockCollapsedByDefault ? "collapsed" : "expanded"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  quickDockCollapsedByDefault: (event.currentTarget as HTMLSelectElement).value === "collapsed"
-                })
-              }
-            >
-              <option value="expanded">Visible</option>
-              <option value="collapsed">Hidden</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>QuickDock max items</label>
-            <select
-              value={String(settings.quickDockMaxItems)}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  quickDockMaxItems: Number((event.currentTarget as HTMLSelectElement).value)
-                })
-              }
-            >
-              <option value="10">10</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>QuickDock pin mode</label>
-            <select
-              value={settings.quickDockPinMode}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  quickDockPinMode: (event.currentTarget as HTMLSelectElement).value as "manual_first" | "manual_only"
-                })
-              }
-            >
-              <option value="manual_first">Manual first + adaptive</option>
-              <option value="manual_only">Manual only</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Classification mode</label>
-            <select
-              value={settings.classificationMode}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  classificationMode: (event.currentTarget as HTMLSelectElement).value as "by_type" | "by_content"
-                })
-              }
-            >
-              <option value="by_type">By bookmark type</option>
-              <option value="by_content">By page content</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Prefer reusing existing categories</label>
-            <select
-              value={settings.preferReuseCategories ? "yes" : "no"}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  preferReuseCategories: (event.currentTarget as HTMLSelectElement).value === "yes"
-                })
-              }
-            >
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
-          </div>
-
-          <div class="field full">
-            <label>Exclude URL patterns (one per line, supports * wildcard)</label>
-            <textarea
-              rows={4}
-              value={excludedText}
-              onInput={(event) => setExcludedText((event.currentTarget as HTMLTextAreaElement).value)}
-              placeholder="https://mail.google.com/*\nhttps://bank.example.com/*"
-            />
-          </div>
-
-          <div class="field full">
-            <label>Ranking weights (semantic / lexical / taxonomy / recency)</label>
-            <div class="weights-grid">
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.05"
-                value={weights.semantic}
-                onInput={(event) => updateWeight("semantic", Number((event.currentTarget as HTMLInputElement).value))}
-              />
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.05"
-                value={weights.lexical}
-                onInput={(event) => updateWeight("lexical", Number((event.currentTarget as HTMLInputElement).value))}
-              />
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.05"
-                value={weights.taxonomy}
-                onInput={(event) => updateWeight("taxonomy", Number((event.currentTarget as HTMLInputElement).value))}
-              />
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.05"
-                value={weights.recency}
-                onInput={(event) => updateWeight("recency", Number((event.currentTarget as HTMLInputElement).value))}
-              />
+        <div class="bento-grid">
+          <section class="bento-card card-ai">
+            <div class="card-head">
+              <h3>AI Core</h3>
+              <p>Model routing, generation behavior, and capture size.</p>
             </div>
-            <button class="btn" type="button" onClick={resetRankingWeights}>
-              Restore default weights
-            </button>
-          </div>
+            <div class="card-grid">
+              <div class="field full">
+                <label>Base URL</label>
+                <input
+                  value={settings.baseUrl}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      baseUrl: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="https://api.openai.com"
+                />
+                <small>Saving settings will request runtime permission only for this domain.</small>
+              </div>
+
+              <div class="field full">
+                <label>API Key</label>
+                <input
+                  type="password"
+                  value={settings.apiKey}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      apiKey: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="sk-..."
+                />
+                <small>Security: API Key is local-only and will never be synced to cloud.</small>
+              </div>
+
+              <div class="field">
+                <label>Model</label>
+                <input
+                  value={settings.model}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      model: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="gpt-4.1-mini"
+                />
+              </div>
+
+              <div class="field">
+                <label>Embedding model</label>
+                <input
+                  value={settings.embeddingModel}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      embeddingModel: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="text-embedding-3-small"
+                />
+              </div>
+
+              <div class="field">
+                <label>Temperature</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={settings.temperature}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      temperature: Number((event.currentTarget as HTMLInputElement).value)
+                    })
+                  }
+                />
+              </div>
+
+              <div class="field">
+                <label>Max chars for capture</label>
+                <input
+                  type="number"
+                  min="1000"
+                  max="200000"
+                  step="1000"
+                  value={settings.maxChars}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      maxChars: Number((event.currentTarget as HTMLInputElement).value)
+                    })
+                  }
+                />
+              </div>
+
+              <div class="field">
+                <label>Embedding content mode</label>
+                <select
+                  value={settings.embeddingContentMode}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      embeddingContentMode: (event.currentTarget as HTMLSelectElement).value as "readability_only" | "full_capture"
+                    })
+                  }
+                >
+                  <option value="readability_only">Readability summary only</option>
+                  <option value="full_capture">Full capture text (capped)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Embedding max chars</label>
+                <input
+                  type="number"
+                  min="1000"
+                  max="120000"
+                  step="1000"
+                  value={settings.embeddingMaxChars}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      embeddingMaxChars: Number((event.currentTarget as HTMLInputElement).value)
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </section>
+
+          <section class="bento-card card-cloud">
+            <div class="card-head">
+              <h3>Cloud & Auth</h3>
+              <p>Sync profile and auth bridge endpoints.</p>
+            </div>
+            <div class="card-grid">
+              <div class="field">
+                <label>Cloud sync</label>
+                <select
+                  value={settings.cloudSyncEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      cloudSyncEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                    })
+                  }
+                >
+                  <option value="on">Enabled</option>
+                  <option value="off">Disabled</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Auth bridge URL</label>
+                <input
+                  value={settings.authBridgeUrl}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      authBridgeUrl: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="https://bridge.musemark.app"
+                />
+              </div>
+
+              <div class="field full">
+                <label>Supabase URL</label>
+                <input
+                  value={settings.supabaseUrl}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      supabaseUrl: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="https://xxxx.supabase.co"
+                />
+                <small>Cloud sync/auth uses runtime permission for this domain only.</small>
+              </div>
+
+              <div class="field full">
+                <label>Supabase anon key</label>
+                <input
+                  type="password"
+                  value={settings.supabaseAnonKey}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      supabaseAnonKey: (event.currentTarget as HTMLInputElement).value
+                    })
+                  }
+                  placeholder="eyJhbGci..."
+                />
+              </div>
+            </div>
+          </section>
+
+          <section class="bento-card card-search">
+            <div class="card-head">
+              <h3>Search Intelligence</h3>
+              <p>Semantic retrieval, fallback, clarification, and ranking weights.</p>
+            </div>
+            <div class="card-grid">
+              <div class="field">
+                <label>Semantic search</label>
+                <select
+                  value={settings.semanticSearchEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      semanticSearchEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                    })
+                  }
+                >
+                  <option value="on">Enabled</option>
+                  <option value="off">Disabled</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Fallback mode</label>
+                <select
+                  value={settings.searchFallbackMode}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      searchFallbackMode: (event.currentTarget as HTMLSelectElement).value as "local_hybrid" | "lexical_only"
+                    })
+                  }
+                >
+                  <option value="local_hybrid">Local hybrid</option>
+                  <option value="lexical_only">Lexical only</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Web augment for ambiguous query</label>
+                <select
+                  value={settings.webAugmentEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      webAugmentEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                    })
+                  }
+                >
+                  <option value="on">Enabled</option>
+                  <option value="off">Disabled</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Clarify on low confidence</label>
+                <select
+                  value={settings.clarifyOnLowConfidence ? "on" : "off"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      clarifyOnLowConfidence: (event.currentTarget as HTMLSelectElement).value === "on"
+                    })
+                  }
+                >
+                  <option value="on">Enabled</option>
+                  <option value="off">Disabled</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Low confidence threshold</label>
+                <input
+                  type="number"
+                  min="0.4"
+                  max="0.95"
+                  step="0.01"
+                  value={settings.lowConfidenceThreshold}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      lowConfidenceThreshold: Number((event.currentTarget as HTMLInputElement).value)
+                    })
+                  }
+                />
+              </div>
+
+              <div class="field">
+                <label>Max web augment calls/query</label>
+                <select
+                  value={String(settings.maxWebAugmentPerQuery)}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      maxWebAugmentPerQuery: Number((event.currentTarget as HTMLSelectElement).value)
+                    })
+                  }
+                >
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>
+
+              <div class="field full">
+                <label>Ranking weights (semantic / lexical / taxonomy / recency)</label>
+                <div class="weights-grid">
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={weights.semantic}
+                    onInput={(event) => updateWeight("semantic", Number((event.currentTarget as HTMLInputElement).value))}
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={weights.lexical}
+                    onInput={(event) => updateWeight("lexical", Number((event.currentTarget as HTMLInputElement).value))}
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={weights.taxonomy}
+                    onInput={(event) => updateWeight("taxonomy", Number((event.currentTarget as HTMLInputElement).value))}
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={weights.recency}
+                    onInput={(event) => updateWeight("recency", Number((event.currentTarget as HTMLInputElement).value))}
+                  />
+                </div>
+                <button class="btn" type="button" onClick={resetRankingWeights}>
+                  Restore default weights
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="bento-card card-workflow">
+            <div class="card-head">
+              <h3>Workflow</h3>
+              <p>QuickDock behavior, classification strategy, and lifecycle retention.</p>
+            </div>
+            <div class="card-grid">
+              <div class="field">
+                <label>QuickDock</label>
+                <select
+                  value={settings.quickDockEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      quickDockEnabled: (event.currentTarget as HTMLSelectElement).value === "on"
+                    })
+                  }
+                >
+                  <option value="on">Enabled</option>
+                  <option value="off">Disabled</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>QuickDock default visibility</label>
+                <select
+                  value={settings.quickDockCollapsedByDefault ? "collapsed" : "expanded"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      quickDockCollapsedByDefault: (event.currentTarget as HTMLSelectElement).value === "collapsed"
+                    })
+                  }
+                >
+                  <option value="expanded">Visible</option>
+                  <option value="collapsed">Hidden</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>QuickDock max items</label>
+                <select
+                  value={String(settings.quickDockMaxItems)}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      quickDockMaxItems: Number((event.currentTarget as HTMLSelectElement).value)
+                    })
+                  }
+                >
+                  <option value="10">10</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>QuickDock pin mode</label>
+                <select
+                  value={settings.quickDockPinMode}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      quickDockPinMode: (event.currentTarget as HTMLSelectElement).value as "manual_first" | "manual_only"
+                    })
+                  }
+                >
+                  <option value="manual_first">Manual first + adaptive</option>
+                  <option value="manual_only">Manual only</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Classification mode</label>
+                <select
+                  value={settings.classificationMode}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      classificationMode: (event.currentTarget as HTMLSelectElement).value as "by_type" | "by_content"
+                    })
+                  }
+                >
+                  <option value="by_type">By bookmark type</option>
+                  <option value="by_content">By page content</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Prefer reusing existing categories</label>
+                <select
+                  value={settings.preferReuseCategories ? "yes" : "no"}
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      preferReuseCategories: (event.currentTarget as HTMLSelectElement).value === "yes"
+                    })
+                  }
+                >
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Trash retention days</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="365"
+                  step="1"
+                  value={settings.trashRetentionDays}
+                  onInput={(event) =>
+                    setSettings({
+                      ...settings,
+                      trashRetentionDays: Number((event.currentTarget as HTMLInputElement).value)
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </section>
+
+          <section class="bento-card card-privacy">
+            <div class="card-head">
+              <h3>Privacy Filters</h3>
+              <p>Exclude sensitive domains from capture and model processing.</p>
+            </div>
+            <div class="card-grid">
+              <div class="field full">
+                <label>Exclude URL patterns (one per line, supports * wildcard)</label>
+                <textarea
+                  rows={4}
+                  value={excludedText}
+                  onInput={(event) => setExcludedText((event.currentTarget as HTMLTextAreaElement).value)}
+                  placeholder="https://mail.google.com/*\nhttps://bank.example.com/*"
+                />
+              </div>
+            </div>
+          </section>
         </div>
 
-        <section class="dock-control">
+        <section class="bento-card dock-control">
           <div class="dock-control-head">
             <h2>Dock Control</h2>
             <span>
@@ -724,17 +807,7 @@ function App() {
             )}
           </div>
         </section>
-
-        <div class="footer">
-          <button class="btn primary" onClick={() => void saveSettings()} disabled={saving}>
-            Save settings
-          </button>
-          <button class="btn" onClick={() => void testConnection()} disabled={saving}>
-            Test connection
-          </button>
-          <div class="hint">{status}</div>
-        </div>
-      </section>
+      </main>
     </div>
   );
 }

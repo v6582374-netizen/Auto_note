@@ -204,6 +204,8 @@ npm run build
 
 在扩展 `Options` 页面配置关键参数。
 
+![MuseMark Options Preview](options_preview.jpg)
+
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `baseUrl` | OpenAI 兼容 API 地址 | `https://api.openai.com` |
