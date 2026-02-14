@@ -59,7 +59,7 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 | AI 摘要与分类 | 完成 | 双阶段流程（analyze + classify），失败可回退/重试 |
 | 语义检索 | 完成 | lexical + semantic + taxonomy + recency 混合排序 |
 | 低置信度澄清 | 完成 | 模糊查询可触发澄清选项，二次排序 |
-| QuickDock | 完成 | 网页侧常驻入口，右侧竖向 Top10，支持 pin/dismiss/layout 与数字快捷键；已完成关闭控件中轴对齐与瀑布流展开/收起动画 |
+| QuickDock | 完成 | 网页侧常驻入口，支持右侧竖向 / 底部居中横向切换；支持 pin/dismiss、Pinned 拖拽重排（Options + 页面 Dock）与数字快捷键；已完成关闭控件中轴对齐与瀑布流展开/收起动画 |
 | 回收站生命周期 | 完成 | Trash / Restore / Permanent Delete / Retention 清理 |
 | 导入导出 | 完成 | Manager 端 JSON 导入导出 |
 | 分类规则工作台 | 完成 | Canonical + aliases 管理 |
@@ -100,9 +100,12 @@ MuseMark 的思路是把“保存-理解-组织-召回”串成一个闭环：
 
 ### 4) QuickDock（网页侧快速入口）
 
-- 默认右侧竖向常驻（浏览器网页内）
+- 支持位置切换：右侧竖向 / 下方居中横向（浏览器网页内）
 - 默认展示 Top10 常用书签（打开频次 + 时间衰减）
 - 支持 pin/unpin、临时 dismiss
+- 支持 Pinned 拖拽重排：
+  - `Options > Dock Control > Pinned to Dock` 可拖拽调整
+  - 页面内 QuickDock 图标可直接拖拽调整
 - 支持快捷键直达：`Ctrl + 1..0`
 - 支持从 Dock 快速打开 Library 或保存当前页
 - 支持在 `Options` 中分区管理：
@@ -223,6 +226,7 @@ npm run build
 | `semanticSearchEnabled` | 是否启用语义检索 | `true` |
 | `searchFallbackMode` | 检索降级策略 | `local_hybrid` |
 | `quickDockCollapsedByDefault` | QuickDock 默认可见性 | `false` |
+| `quickDockPosition` | QuickDock 位置（右侧/底部） | `right` |
 | `quickDockMaxItems` | QuickDock 展示数量 | `10` |
 | `excludedUrlPatterns` | 隐私排除规则（不走 AI） | `[]` |
 | `trashRetentionDays` | 回收站保留天数 | `30` |
@@ -308,6 +312,15 @@ npm run check
 - 为网页内常驻 Dock 启用 `http/https` 页面注入权限
 - 对 AI/Supabase 域名请求继续走权限控制与显式配置
 - 所有能力围绕“书签保存/整理/检索/同步”单一用途
+
+### 第三方图标资源（favicon fallback）
+
+- 用途：当站点 favicon 缺失或加载失败时，QuickDock / Manager / Options 统一显示兜底图标
+- 图标来源：Tabler Icons `world`（已做颜色微调）
+- 许可证：MIT License
+- 参考：
+  - [Tabler Icons](https://tablericons.com/)
+  - [Tabler Icons Repository](https://github.com/tabler/tabler-icons)
 
 <a id="roadmap"></a>
 
