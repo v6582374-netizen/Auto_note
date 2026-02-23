@@ -1,8 +1,8 @@
 # MuseMark Chrome Web Store Submission Pack
 
 ## 1) Upload package (prepared)
-- ZIP: `releases/musemark-store-v0.1.1-permission-tightened.zip`
-- SHA256: `0cf1cfefad9cd865706b8b544992c9560cd46daf50b7b56efabd057a22750ced`
+- ZIP: `releases/musemark-store-v0.1.1.zip`
+- SHA256: `290f04f2930ad340673bf4a9a497ef245e190e9a288ac69b62f398e15e9c7af4`
 
 ## 2) Listing copy (ready to use)
 

@@ -286,29 +286,23 @@ npm run build
 
 # TypeScript 类型检查
 npm run check
+
+# 安全打包（仅打包 dist，附带隐私与构建校验）
+npm run release:pack
 ```
 
 ### 发布建议流程（阶段性）
 
-1. 执行 `npm run build && npm run check`
-2. 在 `chrome://extensions/` 完成 smoke test
-3. 打包 `dist/` 为 zip，放入 `releases/`
-4. 按 `docs/store/chrome-web-store-submission.md` 完成上架材料
+1. 执行 `npm run release:pack`
+2. 在 `chrome://extensions/` 加载最新 `dist/` 完成 smoke test
+3. 使用脚本产物 `releases/musemark-store-v<manifest.version>.zip`
+4. 按 `docs/store/chrome-web-store-submission.md` 与 `docs/store/chrome-web-store-upload-manual-2026-02-23.md` 完成提审
 
 ### 发布前强校验清单（建议每次都跑）
 
 ```bash
-# 1) 类型检查
-npm run check
-
-# 2) 严格冗余检查（防止遗留未使用代码）
-npx tsc --noEmit --noUnusedLocals --noUnusedParameters
-
-# 3) 生产构建
-npm run build
-
-# 4) content script 注入安全检查（MV3 content_scripts 不能是模块脚本）
-head -n 1 dist/content.js
+# 一条命令完成类型检查、冗余检查、构建、content script 安全检查与打包
+npm run release:pack
 ```
 
 若 `dist/content.js` 首行以 `import ...` 开头，或页面出现 `Cannot use import statement outside a module`，请停止提审并先修复打包产物。
@@ -322,6 +316,16 @@ head -n 1 dist/content.js
 - 书签主数据：IndexedDB（Dexie）
 - 设置与会话状态：`chrome.storage.local`
 - API Key：仅本地，不上云
+- 发布包来源：仅 `dist/` 构建产物，不包含浏览器本地 profile 数据（如本地书签库、登录态）
+
+### 安全打包建议（避免隐私误打包）
+
+- 使用 `npm run release:pack`，不要手工从项目根目录整仓打 zip
+- 脚本会自动执行：
+  - 类型检查与未使用代码检查
+  - content script 模块脚本风险检查（防止 `Cannot use import statement outside a module`）
+  - `dist/` 中常见 secret pattern 扫描（如 `sk-...`、`AKIA...`、私钥头）
+  - 仅打包 `dist/` 且排除 sourcemap（`*.map`）
 
 ### 云端（开启后）
 
